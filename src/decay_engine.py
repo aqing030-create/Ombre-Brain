@@ -52,7 +52,7 @@ _DEFAULT_AROUSAL_BOOST = 0.8      # arousal 每 +1 → 情感权重 +0.8
 
 # --- 锁分：某些桶不参与衰减 ---
 _SCORE_PINNED = 999.0    # pinned / protected / permanent 桶恒高分（永不归档）
-_SCORE_FEEL = 50.0       # feel / plan / letter 桶固定中分（生命周期由 status 控制）
+_SCORE_FEEL = 15.0       # feel / plan / letter 桶固定中分（生命周期由 status 控制）
 
 # --- 周期自愈：每轮衰减最多补多少条缺失向量（防一次性打爆 embedding API）---
 # 活跃桶落盘了但 embeddings.db 没它的向量 → breath 向量通道会漏掉它（permanent
