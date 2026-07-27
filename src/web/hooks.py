@@ -96,6 +96,15 @@ def _is_hook_request_authorized(request) -> bool:
         if any(v and sh._constant_time_text_equal(v, token) for v in supplied):
             return True
 
+    # Hook endpoints are read-only; accept the MCP token as well so users
+    # don't need to configure a separate OMBRE_HOOK_TOKEN.
+    mcp_token = os.environ.get("OMBRE_MCP_TOKEN", "").strip()
+    if mcp_token:
+        auth = _header_value(request, "authorization")
+        supplied = auth[7:] if auth.startswith("Bearer ") else ""
+        if supplied and sh._constant_time_text_equal(supplied, mcp_token):
+            return True
+
     try:
         return bool(sh._is_authenticated(request))
     except Exception:
