@@ -17,6 +17,11 @@ import json
 import urllib.request
 import urllib.error
 
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stdin.encoding and sys.stdin.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+
 
 def main():
     if os.environ.get("OMBRE_HOOK_SKIP") == "1":
