@@ -22,7 +22,17 @@ def main():
     if os.environ.get("OMBRE_HOOK_SKIP") == "1":
         sys.exit(0)
 
-    user_input = sys.stdin.read().strip()
+    raw = sys.stdin.read().strip()
+    if not raw:
+        sys.exit(0)
+
+    # CC may pass JSON or plain text on stdin
+    try:
+        payload = json.loads(raw)
+        user_input = str(payload.get("prompt") or payload.get("message") or payload.get("q") or raw).strip()
+    except (json.JSONDecodeError, AttributeError):
+        user_input = raw
+
     if not user_input or len(user_input) < 2:
         sys.exit(0)
 
