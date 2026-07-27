@@ -977,6 +977,41 @@ async def I(
     )
 
 
+_CHAT_SERVER_URL = os.environ.get("OMBRE_CHAT_SERVER_URL", "").strip()
+
+
+@mcp.tool()
+async def recall_chat(
+    query: str,
+    days: Optional[int] = 30,
+    limit: Optional[int] = 10,
+) -> str:
+    """搜索前端聊天记录原文。当 OB 记忆不够详细、需要翻看具体对话原文时使用。query=搜索关键词,days=搜索最近多少天(默认30),limit=返回条数上限(默认10)。返回匹配的对话原文片段。需要先配置环境变量 OMBRE_CHAT_SERVER_URL。"""
+    if not _CHAT_SERVER_URL:
+        return "recall_chat 未启用：未配置 OMBRE_CHAT_SERVER_URL 环境变量。"
+    if not query or not query.strip():
+        return "请提供搜索关键词。"
+    try:
+        url = f"{_CHAT_SERVER_URL.rstrip('/')}/api/chat-logs"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params={"q": query.strip(), "days": min(days or 30, 90)})
+            resp.raise_for_status()
+            entries = resp.json()
+    except Exception as e:
+        logger.warning(f"recall_chat failed: {e}")
+        return f"搜索失败：{type(e).__name__}"
+    if not entries:
+        return f"最近 {days} 天内没有找到包含「{query}」的对话。"
+    entries = entries[:min(limit or 10, 20)]
+    parts = []
+    for e in entries:
+        ai_text = (e.get("ai") or "")[:800]
+        user_text = e.get("user") or ""
+        parts.append(f"[{e.get('date', '?')}]\n知间：{user_text}\n小渡：{ai_text}")
+    header = f"找到 {len(entries)} 条对话（关键词：{query}）\n"
+    return header + "\n\n---\n\n".join(parts)
+
+
 # Pydantic 默认的 ``extra=ignore`` 会让拼错的 MCP 参数看似调用成功；
 # 写工具甚至会在未应用客户端目标字段时仍创建记忆。breath 和 trace
 # 已有严格适配层，其余公开工具使用相同边界，并同步 FastMCP
@@ -1004,6 +1039,7 @@ for _strict_tool_name in (
     "letter_write",
     "letter_read",
     "I",
+    "recall_chat",
 ):
     try:
         _forbid_unknown_tool_arguments(_strict_tool_name)
