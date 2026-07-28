@@ -2358,7 +2358,8 @@ class BucketManager:
                   # 表示「最后一次合并是 hold 还是 grow 触发的」。
                   # _pre_anchor_source_tool 是 anchor 时保存的原始 source_tool，
                   # release 时自动恢复；None 表示删除该字段。
-                  "source_tool", "grow_batch_id", "last_merged_by", "_pre_anchor_source_tool"):
+                  "source_tool", "grow_batch_id", "last_merged_by", "_pre_anchor_source_tool",
+                  "pin_order"):
             if k in kwargs:
                 if k == "weight" and kwargs[k] is not None:
                     post[k] = _clamp01(kwargs[k], _DEFAULT_VALENCE)
