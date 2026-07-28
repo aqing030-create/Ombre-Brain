@@ -60,7 +60,7 @@ async def surface_catalog(
             return "👣 Footprint：暂时无法读取"
         return footprint_snapshot.summary(str(bucket.get("id") or ""), meta)
 
-    grouped: dict[str, list[tuple[int, str]]] = {key: [] for key, _ in _SECTIONS}
+    grouped: dict[str, list[tuple[int, int, str]]] = {key: [] for key, _ in _SECTIONS}
     for b in buckets:
         meta = b.get("metadata", {})
         logical_letter = is_letter_bucket(b)
@@ -104,21 +104,25 @@ async def surface_catalog(
             hint = relation_hint(b)
             if hint:
                 line += f" | {hint.replace(chr(10), ' | ')}"
+        try:
+            pin_ord = int(meta.get("pin_order") or 99)
+        except (TypeError, ValueError):
+            pin_ord = 99
         btype = meta.get("type")
         key = "letter" if logical_letter else btype if btype in grouped else "dynamic"
-        grouped[key].append((imp, line))
+        grouped[key].append((imp, pin_ord, line))
 
     total = sum(len(v) for v in grouped.values())
     if total == 0:
         return "没有匹配过滤条件的记忆桶。"
 
-    ranked: list[tuple[int, str, str]] = []
+    ranked: list[tuple[int, int, str, str]] = []
     for key, _label in _SECTIONS:
-        ranked.extend((imp, line, key) for imp, line in grouped[key])
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    limited: dict[str, list[tuple[int, str]]] = {key: [] for key, _ in _SECTIONS}
-    for imp, line, key in ranked[:max_results]:
-        limited[key].append((imp, line))
+        ranked.extend((imp, po, line, key) for imp, po, line in grouped[key])
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    limited: dict[str, list[tuple[int, int, str]]] = {key: [] for key, _ in _SECTIONS}
+    for imp, po, line, key in ranked[:max_results]:
+        limited[key].append((imp, po, line))
     grouped = limited
     total = sum(len(v) for v in grouped.values())
 
@@ -130,7 +134,10 @@ async def surface_catalog(
         rows = grouped[key]
         if not rows:
             continue
-        rows.sort(key=lambda t: t[0], reverse=True)
+        if key == "permanent":
+            rows.sort(key=lambda t: t[1])
+        else:
+            rows.sort(key=lambda t: t[0], reverse=True)
         parts.append(f"--- {label}（{len(rows)}）---")
-        parts.extend(line for _, line in rows)
+        parts.extend(line for _, _, line in rows)
     return "\n".join(parts)
