@@ -555,10 +555,10 @@ def register(mcp) -> None:
                 ]
                 pinned.sort(
                     key=lambda bucket: (
-                        int(bucket["metadata"].get("importance", 0) or 0),
+                        int(bucket["metadata"].get("pin_order") or 99),
+                        -int(bucket["metadata"].get("importance", 0) or 0),
                         str(bucket["metadata"].get("created", "")),
                     ),
-                    reverse=True,
                 )
                 unresolved = [
                     bucket for bucket in all_buckets

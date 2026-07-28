@@ -841,6 +841,7 @@ async def trace(
     status: Optional[str] = "",
     weight: Optional[float] = -1,
     dont_surface: Optional[int] = -1,
+    pin_order: Optional[int] = -1,
     why_remembered: Optional[str] = "",
     meaning_append: Optional[str] = "",
     meaning_replace: Optional[list] = None,
@@ -865,6 +866,7 @@ async def trace(
     但仍可通过显式 query、importance 审计或目录找回。content 会完整替换正文；
     old_str/new_str 会在完整原文中做唯一、逐字的局部替换（new_str 可为空以删除），
     两种方式都会重建 embedding，且不能同时使用。status/weight 用于 plan；dont_surface 控制日常浮现；
+    pin_order 控制 pinned 桶在 breath 中的加载顺序（0 起始，值越小越先加载）；
     why_remembered、meaning_append/replace、media_append/replace 更新相应元数据。
 
     删除边界：delete=True 只会把 Markdown 移入 archive 并标记 deleted_at，不会
@@ -892,7 +894,8 @@ async def trace(
             tags=tags, resolved=resolved, pinned=pinned,
             protected=protected, digested=digested,
             content=content, delete=delete, status=status, weight=weight,
-            dont_surface=dont_surface, why_remembered=why_remembered,
+            dont_surface=dont_surface, pin_order=pin_order,
+            why_remembered=why_remembered,
             meaning_append=meaning_append, meaning_replace=meaning_replace,
             media_append=media_append, media_replace=media_replace,
             hard_delete=hard_delete, delete_reason=delete_reason,
@@ -911,7 +914,7 @@ async def trace(
             "delete_reason_len": len(str(delete_reason or "")),
             "old_str_len": len(str(old_str or "")),
             "new_str_len": len(str(new_str or "")) if new_str is not None else 0,
-            "weight": weight, "dont_surface": dont_surface,
+            "weight": weight, "dont_surface": dont_surface, "pin_order": pin_order,
             "why_len": len(why_remembered or ""),
             "meaning_append_len": len(meaning_append or ""),
             "meaning_replace_count": len(meaning_replace or []),
