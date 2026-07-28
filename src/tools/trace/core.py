@@ -63,6 +63,7 @@ async def trace_core(
     status: Optional[str] = "",
     weight: Optional[float] = -1,
     dont_surface: Optional[int] = -1,
+    pin_order: Optional[int] = -1,
     why_remembered: Optional[str] = "",
     meaning_append: Optional[str] = "",
     meaning_replace: Optional[list] = None,
@@ -103,6 +104,8 @@ async def trace_core(
         weight = -1
     if dont_surface is None:
         dont_surface = -1
+    if pin_order is None:
+        pin_order = -1
     if why_remembered is None:
         why_remembered = ""
     if meaning_append is None:
@@ -145,6 +148,7 @@ async def trace_core(
     pinned = _safe_int(pinned, -1)
     digested = _safe_int(digested, -1)
     dont_surface = _safe_int(dont_surface, -1)
+    pin_order = _safe_int(pin_order, -1)
 
     metadata_err = check_metadata_size(
         bucket_id=bucket_id,
@@ -432,6 +436,8 @@ async def trace_core(
             updates["weight"] = float(weight)
         if dont_surface in (0, 1):
             updates["dont_surface"] = bool(dont_surface)
+        if pin_order >= 0:
+            updates["pin_order"] = pin_order
         if (
             reserves_high_importance
             and final_importance != requested_importance

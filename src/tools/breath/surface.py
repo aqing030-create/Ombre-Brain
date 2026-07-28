@@ -96,6 +96,7 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
         and b["metadata"].get("type") != "letter"
         and not b["metadata"].get("anchor", False)  # 防御：anchor 是坐标系，永不主动浮现，即使 pinned
     ]
+    pinned_buckets.sort(key=lambda b: int(b["metadata"].get("pin_order") or 99))
     core_filter_notice = ""
     if tag_filter and pinned_buckets:
         core_filter_notice = "[说明：tags 仅过滤普通浮现记忆；核心准则按设计始终注入。]"
