@@ -2661,8 +2661,9 @@ class BucketManager:
                   # i_promoted_to  候选升级后指向的正式 I 桶 ID
                   # i_from_candidate 正式 I 桶指回它的候选桶 ID
                   "i_stage", "i_dream_dates", "i_promoted_to", "i_from_candidate",
-                  # 定制：pinned 桶加载顺序（trace 写入，breath/hooks 读取排序）。
-                  "pin_order"):
+                  # 定制：pinned 桶加载顺序（trace 写入，breath/hooks 读取排序）；
+                  # last_surfaced 为 recall-hook 冷却持久化时间戳（hooks.py 写入）。
+                  "pin_order", "last_surfaced"):
             if k in kwargs:
                 if k == "weight" and kwargs[k] is not None:
                     post[k] = _clamp01(kwargs[k], _DEFAULT_VALENCE)

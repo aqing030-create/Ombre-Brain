@@ -22,6 +22,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from ombrebrain.policy.surfacing import SurfacePolicyVM
 from tools.plan.core import (
@@ -202,13 +203,10 @@ async def _timeout_after(seconds: float):
 # ================================================================
 
 _RECALL_COOLDOWN_HOURS = 10.0
-_RECALL_MAX_RESULTS = 5
+_RECALL_MAX_RESULTS = 3
 _RECALL_FOCUS_THRESHOLD = 3  # 3/5 共享 domain → 聚焦
 _RECALL_TOKEN_BUDGET = 2000
 _RECALL_FEEL_MAX = 1
-
-_recall_cooldown: dict[str, float] = {}
-_recall_cooldown_lock = threading.Lock()
 
 _EMOTION_KEYWORDS: dict[str, tuple[float, float]] = {
     # (valence, arousal) — Russell circumplex
@@ -235,29 +233,28 @@ _EMOTION_KEYWORDS: dict[str, tuple[float, float]] = {
 }
 
 
-def _recall_clean_cooldown() -> None:
-    now = time.monotonic()
-    cutoff = _RECALL_COOLDOWN_HOURS * 3600
-    with _recall_cooldown_lock:
-        expired = [k for k, t in _recall_cooldown.items() if now - t > cutoff]
-        for k in expired:
-            del _recall_cooldown[k]
+def _is_bucket_cooled(bucket: dict) -> bool:
+    """Check cooldown via persistent metadata — survives restart."""
+    last_surfaced = bucket.get("metadata", {}).get("last_surfaced")
+    if not last_surfaced:
+        return False
+    try:
+        t = datetime.fromisoformat(str(last_surfaced))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - t).total_seconds() < _RECALL_COOLDOWN_HOURS * 3600
+    except (ValueError, TypeError):
+        return False
 
 
-def _recall_is_cooled(bucket_id: str) -> bool:
-    now = time.monotonic()
-    with _recall_cooldown_lock:
-        t = _recall_cooldown.get(bucket_id)
-        if t is None:
-            return False
-        return (now - t) < _RECALL_COOLDOWN_HOURS * 3600
-
-
-def _recall_mark_surfaced(bucket_ids: list[str]) -> None:
-    now = time.monotonic()
-    with _recall_cooldown_lock:
-        for bid in bucket_ids:
-            _recall_cooldown[bid] = now
+async def _mark_surfaced(bucket_ids: list[str]) -> None:
+    """Persist surfaced timestamp to bucket metadata."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for bid in bucket_ids:
+        try:
+            await sh.bucket_mgr.update(bid, last_surfaced=now_iso)
+        except Exception as e:
+            logger.warning(f"Failed to mark surfaced: {bid}: {e}")
 
 
 def _detect_emotion(text: str) -> tuple[float, float] | None:
@@ -273,8 +270,6 @@ def _detect_emotion(text: str) -> tuple[float, float] | None:
 
 
 async def _recall_three_layers(user_msg: str) -> str:
-    _recall_clean_cooldown()
-
     if not sh.embedding_engine or not sh.embedding_engine.enabled:
         return ""
     if not sh.bucket_mgr:
@@ -292,24 +287,24 @@ async def _recall_three_layers(user_msg: str) -> str:
     if not vector_results:
         return ""
 
-    # 过滤冷却中的 + 取 top 5
-    filtered = [
-        (bid, score) for bid, score in vector_results
-        if not _recall_is_cooled(bid) and score > 0.45
-    ]
-    top_ids = [bid for bid, _ in filtered[:_RECALL_MAX_RESULTS]]
-
-    if not top_ids:
+    scored = [(bid, score) for bid, score in vector_results if score > 0.45]
+    if not scored:
         return ""
 
-    # 加载桶元数据
+    # 加载桶，过滤类型 + 冷却（持久化）
     top_buckets = []
-    for bid in top_ids:
+    for bid, _ in scored:
         bucket = await sh.bucket_mgr.get(bid)
-        if bucket:
-            meta = bucket.get("metadata", {})
-            if meta.get("type") not in ("feel", "plan", "letter", "i"):
-                top_buckets.append(bucket)
+        if not bucket:
+            continue
+        meta = bucket.get("metadata", {})
+        if meta.get("type") in ("feel", "plan", "letter", "i"):
+            continue
+        if _is_bucket_cooled(bucket):
+            continue
+        top_buckets.append(bucket)
+        if len(top_buckets) >= _RECALL_MAX_RESULTS:
+            break
 
     if not top_buckets:
         return ""
@@ -339,7 +334,7 @@ async def _recall_three_layers(user_msg: str) -> str:
                     user_msg, top_k=_RECALL_MAX_RESULTS * 2
                 )
                 for bid, score in refocus_results:
-                    if _recall_is_cooled(bid) or score <= 0.45:
+                    if score <= 0.45:
                         continue
                     if bid in focused_ids or bid in {b["id"] for b in top_buckets}:
                         continue
@@ -348,6 +343,8 @@ async def _recall_three_layers(user_msg: str) -> str:
                         continue
                     r_meta = replacement.get("metadata", {})
                     if r_meta.get("type") in ("feel", "plan", "letter", "i"):
+                        continue
+                    if _is_bucket_cooled(replacement):
                         continue
                     if focus_domain in (r_meta.get("domain") or []):
                         top_buckets = [
@@ -372,7 +369,7 @@ async def _recall_three_layers(user_msg: str) -> str:
                 meta = bucket.get("metadata", {})
                 if meta.get("type") in ("feel", "plan", "letter", "i"):
                     continue
-                if _recall_is_cooled(bucket["id"]):
+                if _is_bucket_cooled(bucket):
                     continue
                 if bucket["id"] in {b["id"] for b in top_buckets}:
                     continue
@@ -401,10 +398,12 @@ async def _recall_three_layers(user_msg: str) -> str:
             user_msg, top_k=20
         )
         for bid, score in feel_results:
-            if score <= 0.35 or _recall_is_cooled(bid):
+            if score <= 0.35:
                 continue
             bucket = await sh.bucket_mgr.get(bid)
             if not bucket:
+                continue
+            if _is_bucket_cooled(bucket):
                 continue
             if bucket.get("metadata", {}).get("type") == "feel":
                 feel_bucket = bucket
@@ -479,7 +478,7 @@ async def _recall_three_layers(user_msg: str) -> str:
             surfaced_ids.append(feel_bucket["id"])
 
     if surfaced_ids:
-        _recall_mark_surfaced(surfaced_ids)
+        await _mark_surfaced(surfaced_ids)
 
     if not parts:
         return ""
