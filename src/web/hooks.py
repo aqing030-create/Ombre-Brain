@@ -335,7 +335,7 @@ async def _recall_three_layers(user_msg: str) -> str:
     # 过滤冷却中的 + 取 top 5
     filtered = [
         (bid, score) for bid, score in vector_results
-        if not _recall_is_cooled(bid) and score > 0.3
+        if not _recall_is_cooled(bid) and score > 0.45
     ]
     top_ids = [bid for bid, _ in filtered[:_RECALL_MAX_RESULTS]]
 
@@ -379,7 +379,7 @@ async def _recall_three_layers(user_msg: str) -> str:
                     user_msg, top_k=_RECALL_MAX_RESULTS * 2
                 )
                 for bid, score in refocus_results:
-                    if _recall_is_cooled(bid) or score <= 0.3:
+                    if _recall_is_cooled(bid) or score <= 0.45:
                         continue
                     if bid in focused_ids or bid in {b["id"] for b in top_buckets}:
                         continue
