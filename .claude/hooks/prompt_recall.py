@@ -16,6 +16,7 @@ import sys
 import json
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone, timedelta
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -43,6 +44,13 @@ def main():
 
     # 跳过纯命令（/开头）
     if user_input.startswith("/"):
+        sys.exit(0)
+
+    # 跳过短消息和纯语气词——不值得搜索
+    if _should_skip(user_input):
+        bst = timezone(timedelta(hours=1))
+        now = datetime.now(bst).strftime("%Y-%m-%d %H:%M BST")
+        print(f"[此消息发送时间: {now}]")
         sys.exit(0)
 
     ob_url = os.environ.get(
@@ -74,7 +82,7 @@ def main():
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=8) as response:
             ob_output = response.read().decode("utf-8").strip()
             if ob_output:
                 parts.append(ob_output)
@@ -91,8 +99,39 @@ def main():
             if chat_results:
                 parts.append(chat_results)
 
-    if parts:
-        print("\n\n".join(parts))
+    bst = timezone(timedelta(hours=1))
+    now = datetime.now(bst).strftime("%Y-%m-%d %H:%M BST")
+    parts.insert(0, f"[此消息发送时间: {now}]")
+    print("\n\n".join(parts))
+
+
+_SKIP_EXACT = {
+    "oki", "ok", "好", "嗯", "哦", "啊", "对", "行", "是", "哈", "嘻",
+    "呢", "吧", "噢", "哇", "耶", "嗯嗯", "好的", "好吧", "好哦",
+    "哈哈", "哈哈哈", "嘿嘿", "嘻嘻", "呵呵", "hihi", "haha",
+    "对对", "对对对", "是的", "好滴", "okok", "okk", "okii",
+    "嗯呢", "昂", "中", "得", "成", "可", "可以",
+    "谢谢", "感谢", "thx", "thanks", "ty",
+    "晚安", "早安", "午安", "gn", "gm",
+    "在", "在的", "来了", "回来了", "我来了",
+    "没", "没有", "不是", "不要", "不", "别",
+    "真的", "真的吗", "是吗", "啊？", "嗯？", "哦？",
+    "懂了", "明白", "了解", "收到",
+    "继续", "然后呢", "接着",
+    "666", "hhh", "www", "hh",
+    "bb", "拜拜", "bye", "拜",
+}
+
+
+def _should_skip(text):
+    """短消息、纯语气词、纯标点——不触发搜索。"""
+    cleaned = text.strip().lower().rstrip("~～。.!！?？…，,、")
+    if cleaned in _SKIP_EXACT:
+        return True
+    meaningful = "".join(c for c in cleaned if c.isalnum() or '一' <= c <= '鿿')
+    if len(meaningful) <= 2:
+        return True
+    return False
 
 
 def _extract_keywords(text):
@@ -144,14 +183,20 @@ def _search_chat(chat_url, keywords):
             continue
     if not all_results:
         return ""
-    # 最多返回3条，控制token
-    all_results = all_results[:3]
+    all_results = all_results[:5]
     lines = ["[对话原文]"]
     for e in all_results:
-        user_text = (e.get("user") or "")[:200]
-        ai_text = (e.get("ai") or "")[:300]
-        lines.append(f"[{e.get('date', '?')}] 知间：{user_text}")
-        lines.append(f"  小渡：{ai_text}")
+        text = (e.get("text") or "")[:300]
+        if not text.strip():
+            continue
+        ts = (e.get("ts") or "?")[:10]
+        role = e.get("from", "")
+        if role == "user":
+            lines.append(f"[{ts}] 知间：{text}")
+        else:
+            lines.append(f"[{ts}] 小渡：{text}")
+    if len(lines) <= 1:
+        return ""
     return "\n".join(lines)
 
 
