@@ -327,7 +327,7 @@ async def _recall_three_layers(user_msg: str) -> str:
     if not vector_results:
         return ""
 
-    scored = [(bid, score) for bid, score in vector_results if score > 0.45]
+    scored = [(bid, score) for bid, score in vector_results if score > 0.55]
     if not scored:
         return ""
 
@@ -374,7 +374,7 @@ async def _recall_three_layers(user_msg: str) -> str:
                     user_msg, top_k=_RECALL_MAX_RESULTS * 2
                 )
                 for bid, score in refocus_results:
-                    if score <= 0.45:
+                    if score <= 0.55:
                         continue
                     if bid in focused_ids or bid in {b["id"] for b in top_buckets}:
                         continue
@@ -438,7 +438,7 @@ async def _recall_three_layers(user_msg: str) -> str:
             user_msg, top_k=20
         )
         for bid, score in feel_results:
-            if score <= 0.35:
+            if score <= 0.45:
                 continue
             bucket = await sh.bucket_mgr.get(bid)
             if not bucket:
