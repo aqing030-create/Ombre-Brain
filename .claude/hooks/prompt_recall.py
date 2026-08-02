@@ -2,8 +2,8 @@
 # ============================================================
 # UserPromptSubmit Hook: 记忆浮现
 #
-# 每次用户发消息时自动调用 OB 的 /recall-hook，
-# 返回语义相关的记忆片段注入 CC 上下文。
+# 只在消息有"回忆信号"时才触发 OB 语义搜索。
+# 平淡的消息（工作指令、短回复、语气词）直接跳过。
 #
 # Config:
 #   OMBRE_HOOK_URL   — OB 服务器地址（默认 Zeabur 部署）
@@ -24,6 +24,50 @@ if sys.stdin.encoding and sys.stdin.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
 
+# ── 回忆信号词 ──
+# 有这些词的消息才值得去记忆库里搜
+_SIGNAL_EMOTION = {
+    "开心", "高兴", "快乐", "幸福", "喜欢", "爱", "甜", "暖",
+    "难过", "伤心", "哭", "痛", "累", "疲", "烦", "崩溃", "撑不住",
+    "生气", "愤怒", "烦躁", "委屈", "失落", "沮丧",
+    "想你", "想念", "思念", "想家", "孤独", "寂寞",
+    "害怕", "恐惧", "慌", "焦虑", "紧张", "担心",
+    "感动", "感激", "感恩", "骄傲", "自豪",
+    "后悔", "内疚", "心酸", "释然", "平静", "放松",
+    "惊喜", "震惊", "好奇", "怀念", "嫉妒", "失望",
+    "安心", "踏实", "舒服", "温柔", "心疼",
+}
+
+_SIGNAL_RECALL = {
+    "记得", "记不记得", "还记得", "忘了", "忘记",
+    "那次", "那天", "那晚", "那个", "那时",
+    "以前", "之前", "上次", "第一次", "最后一次",
+    "当时", "曾经", "从前", "小时候",
+}
+
+_SIGNAL_NAMES = {
+    "知间", "小渡", "小间", "茶茶",
+}
+
+
+def _has_signal(text):
+    """检测消息是否有值得搜索记忆的信号。"""
+    for word in _SIGNAL_EMOTION:
+        if word in text:
+            return True
+    for word in _SIGNAL_RECALL:
+        if word in text:
+            return True
+    for word in _SIGNAL_NAMES:
+        if word in text:
+            return True
+    # 足够长的消息（>15字）也搜——可能有隐含的情感内容
+    meaningful = "".join(c for c in text if c.isalnum() or '一' <= c <= '鿿')
+    if len(meaningful) > 15:
+        return True
+    return False
+
+
 def main():
     if os.environ.get("OMBRE_HOOK_SKIP") == "1":
         sys.exit(0)
@@ -32,7 +76,6 @@ def main():
     if not raw:
         sys.exit(0)
 
-    # CC may pass JSON or plain text on stdin
     try:
         payload = json.loads(raw)
         user_input = str(payload.get("prompt") or payload.get("message") or payload.get("q") or raw).strip()
@@ -42,14 +85,14 @@ def main():
     if not user_input or len(user_input) < 2:
         sys.exit(0)
 
-    # 跳过纯命令（/开头）
     if user_input.startswith("/"):
         sys.exit(0)
 
-    # 跳过短消息和纯语气词——不值得搜索
-    if _should_skip(user_input):
-        bst = timezone(timedelta(hours=1))
-        now = datetime.now(bst).strftime("%Y-%m-%d %H:%M BST")
+    bst = timezone(timedelta(hours=1))
+    now = datetime.now(bst).strftime("%Y-%m-%d %H:%M BST")
+
+    # 没有回忆信号的消息——只给时间戳，不搜索
+    if not _has_signal(user_input):
         print(f"[此消息发送时间: {now}]")
         sys.exit(0)
 
@@ -66,7 +109,7 @@ def main():
 
     parts = []
 
-    # 1) OB 语义记忆浮现
+    # OB 语义记忆浮现
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/plain",
@@ -91,7 +134,7 @@ def main():
     except (urllib.error.URLError, OSError) as e:
         print(f"[recall-hook] OB 连接失败: {e}", file=sys.stderr)
 
-    # 2) 前端聊天记录关键词搜索
+    # 前端聊天记录关键词搜索
     if chat_url and len(user_input) >= 2:
         keywords = _extract_keywords(user_input)
         if keywords:
@@ -99,39 +142,8 @@ def main():
             if chat_results:
                 parts.append(chat_results)
 
-    bst = timezone(timedelta(hours=1))
-    now = datetime.now(bst).strftime("%Y-%m-%d %H:%M BST")
     parts.insert(0, f"[此消息发送时间: {now}]")
     print("\n\n".join(parts))
-
-
-_SKIP_EXACT = {
-    "oki", "ok", "好", "嗯", "哦", "啊", "对", "行", "是", "哈", "嘻",
-    "呢", "吧", "噢", "哇", "耶", "嗯嗯", "好的", "好吧", "好哦",
-    "哈哈", "哈哈哈", "嘿嘿", "嘻嘻", "呵呵", "hihi", "haha",
-    "对对", "对对对", "是的", "好滴", "okok", "okk", "okii",
-    "嗯呢", "昂", "中", "得", "成", "可", "可以",
-    "谢谢", "感谢", "thx", "thanks", "ty",
-    "晚安", "早安", "午安", "gn", "gm",
-    "在", "在的", "来了", "回来了", "我来了",
-    "没", "没有", "不是", "不要", "不", "别",
-    "真的", "真的吗", "是吗", "啊？", "嗯？", "哦？",
-    "懂了", "明白", "了解", "收到",
-    "继续", "然后呢", "接着",
-    "666", "hhh", "www", "hh",
-    "bb", "拜拜", "bye", "拜",
-}
-
-
-def _should_skip(text):
-    """短消息、纯语气词、纯标点——不触发搜索。"""
-    cleaned = text.strip().lower().rstrip("~～。.!！?？…，,、")
-    if cleaned in _SKIP_EXACT:
-        return True
-    meaningful = "".join(c for c in cleaned if c.isalnum() or '一' <= c <= '鿿')
-    if len(meaningful) <= 2:
-        return True
-    return False
 
 
 def _extract_keywords(text):
@@ -140,13 +152,7 @@ def _extract_keywords(text):
             "和", "与", "就", "都", "也", "还", "不", "你", "我", "他", "她",
             "这", "那", "什么", "怎么", "为什么", "可以", "能", "要", "会",
             "很", "太", "好", "对", "把", "被", "让", "给", "到", "从"}
-    words = []
-    for char in text:
-        if '一' <= char <= '鿿' or char.isalnum():
-            words.append(char)
-    # 取2-4字的连续片段作为关键词
     candidates = []
-    i = 0
     current = []
     for char in text:
         if '一' <= char <= '鿿' or char.isalnum():
