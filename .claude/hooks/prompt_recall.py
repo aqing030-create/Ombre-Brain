@@ -2,8 +2,8 @@
 # ============================================================
 # UserPromptSubmit Hook: 记忆浮现
 #
-# 只在消息有"回忆信号"时才触发 OB 语义搜索。
-# 平淡的消息（工作指令、短回复、语气词）直接跳过。
+# 默认触发 OB 语义搜索，只跳过明确不值得搜索的消息：
+# 纯语气词、极短消息、命令。其他都搜。
 #
 # Config:
 #   OMBRE_HOOK_URL   — OB 服务器地址（默认 Zeabur 部署）
@@ -24,46 +24,33 @@ if sys.stdin.encoding and sys.stdin.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
 
-# ── 回忆信号词 ──
-# 有这些词的消息才值得去记忆库里搜
-_SIGNAL_EMOTION = {
-    "开心", "高兴", "快乐", "幸福", "喜欢", "爱", "甜", "暖",
-    "难过", "伤心", "哭", "痛", "累", "疲", "烦", "崩溃", "撑不住",
-    "生气", "愤怒", "烦躁", "委屈", "失落", "沮丧",
-    "想你", "想念", "思念", "想家", "孤独", "寂寞",
-    "害怕", "恐惧", "慌", "焦虑", "紧张", "担心",
-    "感动", "感激", "感恩", "骄傲", "自豪",
-    "后悔", "内疚", "心酸", "释然", "平静", "放松",
-    "惊喜", "震惊", "好奇", "怀念", "嫉妒", "失望",
-    "安心", "踏实", "舒服", "温柔", "心疼",
-}
-
-_SIGNAL_RECALL = {
-    "记得", "记不记得", "还记得", "忘了", "忘记",
-    "那次", "那天", "那晚", "那个", "那时",
-    "以前", "之前", "上次", "第一次", "最后一次",
-    "当时", "曾经", "从前", "小时候",
-}
-
-_SIGNAL_NAMES = {
-    "知间", "小渡", "小间", "茶茶",
+# ── 黑名单：这些消息不值得搜索 ──
+_SKIP_EXACT = {
+    "oki", "ok", "好", "嗯", "哦", "啊", "对", "行", "是", "哈", "嘻",
+    "呢", "吧", "噢", "哇", "耶", "嗯嗯", "好的", "好吧", "好哦",
+    "哈哈", "哈哈哈", "嘿嘿", "嘻嘻", "呵呵", "hihi", "haha",
+    "对对", "对对对", "是的", "好滴", "okok", "okk", "okii",
+    "嗯呢", "昂", "中", "得", "成", "可", "可以",
+    "谢谢", "感谢", "thx", "thanks", "ty",
+    "晚安", "早安", "午安", "gn", "gm",
+    "在", "在的", "来了", "回来了", "我来了",
+    "没", "没有", "不是", "不要", "不", "别",
+    "真的", "真的吗", "是吗", "啊？", "嗯？", "哦？",
+    "懂了", "明白", "了解", "收到",
+    "继续", "然后呢", "接着", "现在呢", "怎样",
+    "666", "hhh", "www", "hh",
+    "bb", "拜拜", "bye", "拜",
+    "改", "看看", "试试", "推上去",
 }
 
 
-def _has_signal(text):
-    """检测消息是否有值得搜索记忆的信号。"""
-    for word in _SIGNAL_EMOTION:
-        if word in text:
-            return True
-    for word in _SIGNAL_RECALL:
-        if word in text:
-            return True
-    for word in _SIGNAL_NAMES:
-        if word in text:
-            return True
-    # 足够长的消息（>15字）也搜——可能有隐含的情感内容
-    meaningful = "".join(c for c in text if c.isalnum() or '一' <= c <= '鿿')
-    if len(meaningful) > 15:
+def _should_skip(text):
+    """只跳过明确不值得搜索的消息。"""
+    cleaned = text.strip().lower().rstrip("~～。.!！?？…，,、")
+    if cleaned in _SKIP_EXACT:
+        return True
+    meaningful = "".join(c for c in cleaned if c.isalnum() or '一' <= c <= '鿿')
+    if len(meaningful) <= 3:
         return True
     return False
 
@@ -91,8 +78,8 @@ def main():
     bst = timezone(timedelta(hours=1))
     now = datetime.now(bst).strftime("%Y-%m-%d %H:%M BST")
 
-    # 没有回忆信号的消息——只给时间戳，不搜索
-    if not _has_signal(user_input):
+    # 黑名单命中——只给时间戳
+    if _should_skip(user_input):
         print(f"[此消息发送时间: {now}]")
         sys.exit(0)
 
