@@ -380,6 +380,11 @@ def _mcp_resource(
     normalized = _normalize_resource(requested)
     if normalized in (_normalize_resource(base), _normalize_resource(canonical)):
         return True, canonical
+    # 3.2.0 恢复了第二连接器 /mcp-extra（信件）。它是独立的 OAuth resource，
+    # 否则 claude.ai 会把它当成 /mcp 的重复连接器而拒绝新增。
+    extra = f"{base}/mcp-extra"
+    if normalized == _normalize_resource(extra):
+        return True, extra
     return False, canonical
 
 
@@ -956,12 +961,12 @@ def register(mcp) -> None:
         # Ombre exposes one MCP endpoint. Do not let retired or invented paths
         # complete OAuth discovery and appear connected before failing at use.
         sub = str(request.path_params.get("resource_path", "") or "").strip("/")
-        if sub and sub != "mcp":
+        if sub and sub not in ("mcp", "mcp-extra"):
             return _oauth_not_found()
         # The root discovery URL still describes the only real MCP resource;
         # it must never advertise the web origin itself as a protected MCP
         # endpoint.  Path-scoped discovery accepts /mcp only (checked above).
-        resource = f"{base}/mcp"
+        resource = f"{base}/{sub or 'mcp'}"
         return JSONResponse({
             "resource": resource,
             "authorization_servers": [base],

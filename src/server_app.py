@@ -207,8 +207,9 @@ class MCPAuthMiddleware:
             headers = {key.lower(): value for key, value in scope.get("headers", [])}
             auth = headers.get(b"authorization", b"").decode("latin-1")
             base = _canonical_mcp_base(scope, headers, self.public_origin)
-            # OAuth discovery currently exposes one canonical MCP resource.
-            resource = f"{base}{self.resource_path}"
+            # /mcp 与 /mcp-extra 是两个独立的 OAuth resource（3.2.0 双连接器）。
+            req_path = "/mcp-extra" if path.rstrip("/") == "/mcp-extra" else self.resource_path
+            resource = f"{base}{req_path}"
             bearer_token = _extract_bearer_token(auth)
             valid = False
             if bearer_token:
@@ -236,7 +237,7 @@ class MCPAuthMiddleware:
                         alt_token, resource=resource
                     )
             if not valid:
-                endpoint = self.resource_path.strip("/")
+                endpoint = req_path.strip("/")
                 if self.auth_mode == "token":
                     # No OAuth server exists in token mode — a resource_metadata
                     # challenge pointing at a 404'd discovery endpoint would mislead.
