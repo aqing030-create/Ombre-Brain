@@ -712,9 +712,5 @@ async def diary_read(
             f"[bucket_id:{b['id']}] created:{d}\n"
             + strip_wikilinks(b["content"])
         )
-        parts.append(
-            stored_data_marker(payload, provenance=f"diary:{b['id']}")
-            + "\n"
-            + payload
-        )
+        parts.append(payload)
     return "=== 日记（按创建时间倒序） ===\n" + "\n\n---\n\n".join(parts)
