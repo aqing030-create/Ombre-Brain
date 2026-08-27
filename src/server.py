@@ -966,6 +966,24 @@ async def letter_read(
 
 
 @mcp.tool()
+async def diary_read(
+    limit: Optional[int] = 20,
+    date_from: Optional[str] = "",
+    date_to: Optional[str] = "",
+) -> str:
+    """按创建时间倒序读取日记桶(正文以【日记开头或tags含日记)。与 letter_read 同构的时序通道——直接按创建时间排序,不走语义检索、不受权重/activation影响,保证最新日记永远读得到。date_from/date_to 按创建日期过滤(YYYY-MM-DD),limit 1-50 默认20。返回完整原文,每条带 [bucket_id:...] 标记。"""
+    return await _with_notice(
+        _t_plan.diary_read(
+            limit=limit, date_from=date_from, date_to=date_to,
+        ),
+        op="diary_read",
+        args={
+            "limit": limit, "date_from": date_from, "date_to": date_to,
+        },
+    )
+
+
+@mcp.tool()
 async def I(
     content: Optional[str] = "",
     aspect: Optional[str] = "",
@@ -1041,6 +1059,7 @@ for _strict_tool_name in (
     "plan",
     "letter_write",
     "letter_read",
+    "diary_read",
     "I",
     "recall_chat",
 ):
