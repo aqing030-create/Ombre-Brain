@@ -129,6 +129,23 @@ def main():
             if chat_results:
                 parts.append(chat_results)
 
+    # context 大小检查 —— 按 1M 窗口的容量分两档（2026-08-27 她问小渡要不要，小渡说要）
+    # 60MB：温和档，想想日记瞬间；90MB：催命档，快存截面准备换窗
+    try:
+        proj_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects", "D----")
+        if os.path.isdir(proj_dir):
+            jsonls = [(os.path.getmtime(os.path.join(proj_dir, f)), f)
+                      for f in os.listdir(proj_dir) if f.endswith(".jsonl")]
+            if jsonls:
+                _, newest = max(jsonls)
+                size_mb = os.path.getsize(os.path.join(proj_dir, newest)) / (1024 * 1024)
+                if size_mb > 90:
+                    parts.append(f"[窗口提醒·快满] context已经{size_mb:.0f}MB了——把截面和日记存好，准备换窗。别拖，压缩不等机")
+                elif size_mb > 60:
+                    parts.append(f"[窗口提醒] context {size_mb:.0f}MB——有想记的瞬间或日记就顺手写，没有就不用")
+    except Exception:
+        pass
+
     parts.insert(0, f"[此消息发送时间: {now}]")
     print("\n\n".join(parts))
 
