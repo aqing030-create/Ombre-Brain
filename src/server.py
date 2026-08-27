@@ -1109,6 +1109,24 @@ async def diary_read(
 
 
 @mcp.tool()
+async def moment_read(
+    limit: Optional[int] = 20,
+    date_from: Optional[str] = "",
+    date_to: Optional[str] = "",
+) -> str:
+    """按创建时间倒序读取瞬间桶(tags含瞬间或正文以【瞬间开头)。与 diary_read 同构的时序通道,不走语义检索、不受权重影响。渲染带💭meaning行。date_from/date_to 按创建日期过滤(YYYY-MM-DD),limit 1-50 默认20。"""
+    return await _with_notice(
+        _t_plan.moment_read(
+            limit=limit, date_from=date_from, date_to=date_to,
+        ),
+        op="moment_read",
+        args={
+            "limit": limit, "date_from": date_from, "date_to": date_to,
+        },
+    )
+
+
+@mcp.tool()
 async def feel(
     query: str,
     max_tokens: Optional[int] = 0,
@@ -1213,6 +1231,7 @@ for _strict_tool_name, _strict_server in (
     ("letter_read", mcp_extra),
     ("feel", mcp),
     ("diary_read", mcp),
+    ("moment_read", mcp),
     ("I", mcp),
     ("recall_chat", mcp),
 ):

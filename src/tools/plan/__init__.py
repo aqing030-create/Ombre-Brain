@@ -13,6 +13,7 @@ letter_lock_update / letter_read 都收在 plan 子包下，便于阅读特殊�
 
 from .core import (  # noqa: F401
     diary_read,
+    moment_read,
     letter_lock_update,
     letter_read,
     letter_write,

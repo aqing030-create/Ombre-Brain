@@ -714,3 +714,74 @@ async def diary_read(
         )
         parts.append(payload)
     return "=== 日记（按创建时间倒序） ===\n" + "\n\n---\n\n".join(parts)
+
+
+async def moment_read(
+    limit: Optional[int] = 20,
+    date_from: Optional[str] = "",
+    date_to: Optional[str] = "",
+) -> str:
+    """按创建时间倒序读取瞬间桶——与 diary_read 同构的时序通道。
+
+    瞬间判定双保险：tags 含「瞬间」，或正文以「【瞬间」开头
+    （打标瘫痪期的桶没 tags 靠正文兜底，早期桶没格式头靠 tags 兜底）。
+    渲染带 💭 meaning 行，供前端瞬间同步解析。
+    """
+    if limit is None:
+        limit = 20
+    if date_from is None:
+        date_from = ""
+    if date_to is None:
+        date_to = ""
+    metadata_err = check_metadata_size(date_from=date_from, date_to=date_to)
+    if metadata_err:
+        return metadata_err
+    try:
+        limit = max(1, min(50, int(limit)))
+    except (TypeError, ValueError, OverflowError):
+        limit = 20
+    try:
+        all_b = await rt.bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        return f"读取瞬间失败: {e}"
+
+    def _is_moment(b):
+        meta = b.get("metadata", {}) or {}
+        if meta.get("type") in ("letter", "plan", "feel"):
+            return False
+        tags = meta.get("tags") or []
+        if any("瞬间" in str(t) for t in tags):
+            return True
+        content = (b.get("content") or "").lstrip()
+        return content.startswith("【瞬间")
+
+    moments = [b for b in all_b if _is_moment(b)]
+
+    def _within(b):
+        d = b["metadata"].get("created", "")
+        if date_from and d and d[:10] < date_from[:10]:
+            return False
+        if date_to and d and d[:10] > date_to[:10]:
+            return False
+        return True
+
+    moments = [b for b in moments if _within(b)]
+    moments.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+    moments = moments[:limit]
+    if not moments:
+        return "没有找到瞬间。"
+    parts = []
+    for b in moments:
+        meta = b["metadata"]
+        d = (meta.get("created", ""))[:10]
+        meanings = meta.get("meaning") or []
+        if isinstance(meanings, str):
+            meanings = [meanings]
+        meaning_lines = "".join(f"💭 meaning: {m}\n" for m in meanings if m)
+        payload = (
+            f"[bucket_id:{b['id']}] created:{d}\n"
+            + meaning_lines
+            + strip_wikilinks(b["content"])
+        )
+        parts.append(payload)
+    return "=== 瞬间（按创建时间倒序） ===\n" + "\n\n---\n\n".join(parts)
