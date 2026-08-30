@@ -269,6 +269,19 @@ def _detect_emotion(text: str) -> tuple[float, float] | None:
     return (avg_v, avg_a)
 
 
+def _hook_data_block(
+    bucket: dict,
+    text: str,
+    *,
+    role: str = "",
+    content_truncated: bool = False,
+) -> str:
+    bid = bucket.get("id", "?")
+    header = f"[{role}|{bid}]" if role else f"[{bid}]"
+    suffix = " …(truncated)" if content_truncated else ""
+    return f"{header}\n{text}{suffix}\n"
+
+
 async def _recall_three_layers(user_msg: str) -> str:
     if not sh.embedding_engine or not sh.embedding_engine.enabled:
         return ""
