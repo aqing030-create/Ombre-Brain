@@ -36,6 +36,7 @@ from .._common import (
     check_metadata_size,
     check_query_size,
 )
+from ._date_range import parse_created_range
 from .catalog import surface_catalog
 from .feel import surface_feels
 from .importance import surface_by_importance
@@ -47,6 +48,29 @@ async def _with_deletion_requests(body: str) -> str:
     store = getattr(rt, "deletion_requests", None)
     batch = await store.render_pending_batch() if store is not None else ""
     return f"{batch}\n\n{body}" if batch and body else (batch or body)
+
+
+async def _with_them(body: str, query: str = "") -> str:
+    """把 them 的认识追加在浮现结果**之后**。
+
+    独立通道，不进融合打分：任何一条普通记忆的分数与名次都不因为 them 的存在
+    而改变（rule.md 13.3）。them 关着时这里返回空串，输出与没有这个模块时
+    逐字一致——这也是那条边界唯一可被检验的形式。
+
+    只挂在浮现与检索两条路上。catalog / feel / plan / importance 是定向通道，
+    问的是特定的东西，往里塞一段人物补注只是噪音。
+    """
+    service = getattr(rt, "them_service", None)
+    if service is None:
+        return body
+    try:
+        block = await service.surface(query=query)
+    except Exception as exc:
+        rt.logger.warning(f"them surface skipped / them 追加块跳过: {exc}")
+        return body
+    if not block:
+        return body
+    return f"{body}\n\n{block}" if body else block
 
 
 async def dispatch(
@@ -90,6 +114,11 @@ async def dispatch(
     if metadata_err:
         return metadata_err
 
+    # 3.6.0：日期区间在这里统一解析并校验一次，五条分支拿到同一对边界。
+    # 此前只有 search 分支接了 date_from/date_to，`breath_advanced(date_to=...)`
+    # 不带 query 时参数被静默丢弃——收下了、schema 也认，就是没人用它。
+    created_from, created_to = parse_created_range(date_from, date_to)
+
     if rt.mark_op:
         rt.mark_op("breath")
     rt.record_v3_tool_event("breath", {
@@ -129,6 +158,8 @@ async def dispatch(
             domain_filter=domain_filter or None,
             tag_filter=tag_filter,
             max_results=max_results,
+            created_from=created_from,
+            created_to=created_to,
         ))
 
     # --- 解析 tags 过滤；feel/__feel__ 映射到 feel 通道 ---
@@ -139,7 +170,12 @@ async def dispatch(
     # --- Feel 通道：3.0.0 起必须带关键词，不再全量返回（见 feel.py） ---
     if domain.strip().lower() == "feel":
         return await _with_deletion_requests(
-            await surface_feels(query=query, max_tokens=memory_max_tokens)
+            await surface_feels(
+                query=query,
+                max_tokens=memory_max_tokens,
+                created_from=created_from,
+                created_to=created_to,
+            )
         )
 
     # --- Plan 通道：与 feel 同构。plan 不参与普通浮现，没有这个分流时
@@ -153,18 +189,22 @@ async def dispatch(
             importance_min=importance_min,
             max_tokens=memory_max_tokens,
             tag_filter=tag_filter,
+            created_from=created_from,
+            created_to=created_to,
         ))
 
     # --- 无 query：浮现模式 ---
     if not query or not query.strip():
-        return await _with_deletion_requests(await surface_default(
+        return await _with_deletion_requests(await _with_them(await surface_default(
             max_results=max_results,
             max_tokens=memory_max_tokens,
             tag_filter=tag_filter,
-        ))
+            created_from=created_from,
+            created_to=created_to,
+        )))
 
     # --- 有 query：检索模式 ---
-    return await _with_deletion_requests(await surface_search(
+    return await _with_deletion_requests(await _with_them(await surface_search(
         query=query,
         max_results=max_results,
         max_tokens=memory_max_tokens,
@@ -175,4 +215,6 @@ async def dispatch(
         date_from=date_from,
         date_to=date_to,
         with_quotes=quotes,
-    ))
+        created_from=created_from,
+        created_to=created_to,
+    ), query))

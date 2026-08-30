@@ -28,12 +28,13 @@
 
 ## 我的连接器
 
-我有十六种能力，全部在一个 MCP 连接器 `/mcp` 里：
+我有十六种基础能力，全在同一个 MCP 连接器 `/mcp` 上：
 
-- **高频 7 个**：`breath` / `breath_search` / `breath_advanced` / `hold` / `grow` / `dream` / `trace`
-- **低频 9 个**：`feel` / `anchor` / `release` / `pulse` / `plan` / `letter_write` / `letter_lock_update` / `letter_read` / `I`
+- 7 个高频记忆工具 `breath` / `breath_search` / `breath_advanced` / `hold` / `grow` / `dream` / `trace`
+- 6 个低频记忆工具 `feel` / `anchor` / `release` / `pulse` / `plan` / `I`
+- 3 个信件工具 `letter_write` / `letter_lock_update` / `letter_read`
 
-连上 `/mcp` 就拥有全部十六种能力。
+连上 `/mcp` 就拥有全部能力，不需要第二条连接。信件 3.2.0 曾拆到 `/mcp-extra`，3.4.0 并回主链路，那个端点现在返回 404。
 
 ---
 
@@ -111,8 +112,16 @@
 | 改 plan 状态                   | `trace(plan_id, status="resolved")` — 仅对 plan 桶                                                                        |
 | 调 plan 重量                   | `trace(plan_id, weight=0.8)`                                                                                               |
 | 改/补「为什么记得」            | `trace(id, why_remembered="...")`                                                                                          |
+| 这两条根本不该连在一起         | `trace(id, unlink="目标id")` — 双向断开后端自动建的关联                                                                    |
+| 该连，但关系类型判错了         | `trace(id, relink="目标id", relation_type="related_to")` — 改已有关系的类型，对侧自动取反向；不能凭空建立关系              |
+| 这句引语记错了 / 不该留        | `trace(id, quotes_replace=["要保留的那句原话"])` — 整体替换引语；`[]` 删除全部；只能改和删，不能补录                       |
+| 刚读完，这条确实要紧           | `trace(id, reinforce=True)` — 唯一的强化入口；检索本身不再强化任何桶                                                        |
 
 局部替换前先读取当前原文（普通桶可按完整 ID 使用 `breath_search`；预算不足时用 `breath_advanced(..., max_tokens=20000)`；其他类型可用对应入口或 Dashboard），再复制连续片段作为 `old_str`。匹配是逐字且按起始位置计数的，只有正文中恰好出现一次才会写入；零次命中、包含重叠在内的多次命中、或替换后正文为空都会拒绝且不改桶。替换本身始终针对存储中的完整正文，长桶和 pinned 桶也不会绕过同桶并发锁。
+
+桶间关系由后端在写入时自动建立，你**不需要也无法主动建立**它们（关联是发现，不是决定）。但看到 `↳ 相关 → xxx` 这类提示明显不对时，可以用 `unlink` / `relink` 修正——`relink` 只能改已存在关系的类型，两条记忆之间原本没有关系时会被拒绝。改过的关系此后不再被自动推断改写。
+
+引语（`hold(quotes=[...])` 写下的那几句原话）可以用 `quotes_replace` 订正和删除，但**不能补录**：这条记忆本来没有引语会被拒绝，条数也只能持平或减少。「当时说出口就知道不想忘」是写入那一刻的判断；事后追认一句话「当时就知道它重要」，那是摘要，不是引语。要看某条记忆存了哪几句，用 `breath_search(query="...", quotes=True)`——OB 没有「返回全文」这个入口，当时没挑出来的话就没有留下。
 
 **`anchor` 字段不在 trace 里**——切换 anchor 必须走专门的 `anchor()` / `release()`，受 24 上限保护。`protected` 使用独立配额（默认 20），它与 pinned、anchor 都不能并存；显式 query/catalog 仍可找到受保护记忆。
 
@@ -255,7 +264,7 @@ permanent）③你的 active plans ④按 token 预算折叠的 feel 历史 ⑤c
 2. **feel 是痕迹，不是问题**。一旦写下，**不要去 `trace(resolved=1)` 一个 feel**——它不是要解决的事，就该留着它本来的形状。代码层目前不会拦你，靠你自己守。
 3. **anchor 必须先 hold 再 anchor**。不能用一次调用同时完成「写入+定为坐标系」。这个分两步是为了让你事后选择，而不是写入当下的冲动。
 4. **plan 不要用 hold 创建**。`hold` 写出来的桶不在 plan 看板里，自动结案机制也不会管。
-5. **breath 不调用 `touch()`**。无参浮现只是「让我看看」，不重置任何衰减计时器；只有 `breath_search(query=...)`（或 `breath_advanced(query=...)`）命中桶时才会刷新它的活跃度。
+5. **读取一律不强化（3.6.0）**。无参浮现、`breath_search`、按完整 ID 取桶——**全部只读**，一条都不 `touch()`。检索是「我去找它」，不是「它很重要」；为了核对、debug、反复确认而读的记忆，读多了权重就爬到最高，那不是记忆变重要，是我查得勤。要强化某条，读完之后针对**那一条**说 `trace(bucket_id, reinforce=True)`——不要整批命中一起强化，命中里绝大多数只是路过。
 6. **没有 LLM key 时 `hold` / `grow` 直接报错并不创建桶**，不会静默兜底。报错信息会告诉你检查 `OMBRE_COMPRESS_API_KEY`。
 7. **没有 embedding key** 时桶仍能正常写入并留在耐久索引队列。`breath_search(query=...)` 会明确显示「检索降级」，继续使用关键词/BM25；命中的正文不调用摘要服务，在 token 预算装得下时逐字返回，装不下则整桶拒绝并提示提高 `max_tokens`，不会截断正文。
 8. **错误码 `OB-E004`** 出现时表示工具内部异常被兜住了，返回串里会附最近 15 条结构化日志。把它们读完再决定下一步，不要忽略。

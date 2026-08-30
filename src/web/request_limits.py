@@ -11,11 +11,12 @@ _Send = Callable[[dict], Awaitable[None]]
 _REJECTION_DRAIN_MULTIPLIER = 2
 
 
-# 两个公开的 MCP 端点：
-#   /mcp        —— 主连接器，日常记忆动作
-#   /mcp-extra  —— 低频的独立语义层（信件）。2.8.5 起退役返回 404，3.2.0 恢复。
-# 中间件必须同时认这两个路径，否则 /mcp-extra 会绕过体积限制、CSRF 与鉴权。
-_MCP_ENDPOINT_PATHS = frozenset({"/mcp", "/mcp-extra"})
+# 唯一的公开 MCP 端点。
+#
+# `/mcp-extra` 在 2.8.5 退役、3.2.0 随信件恢复、3.4.0 随信件并回主链路再次退役。
+# 它从这里移除后不再被当作 MCP 路径：路由已经不存在，请求会 404，而在 404 之前
+# 先落到管理面的体积限制上——这比继续认它更严，是想要的方向。
+_MCP_ENDPOINT_PATHS = frozenset({"/mcp"})
 
 
 def is_mcp_endpoint_path(path: object) -> bool:

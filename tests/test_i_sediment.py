@@ -14,6 +14,8 @@ from datetime import datetime
 
 import pytest
 
+from errors import ToolInputError
+
 from tools import dream
 from tools import _runtime as rt
 from tools.dream.hints import build_crystal_hint
@@ -146,10 +148,11 @@ async def test_promote_rejected_before_enough_dream_witnesses(env):
     await i_core.i_core(content="我觉得我更信任慢下来的判断。")
     bucket_id = next(iter(env.buckets))
 
-    out = await i_core.i_core(promote=bucket_id)
+    with pytest.raises(ToolInputError) as excinfo:
+        await i_core.i_core(promote=bucket_id)
 
-    assert "还不够" in out
-    assert f"0/{I_PROMOTE_THRESHOLD}" in out
+    assert "还不够" in str(excinfo.value)
+    assert f"0/{I_PROMOTE_THRESHOLD}" in str(excinfo.value)
     assert all(b["metadata"]["type"] != "i" for b in env.buckets.values())
 
 
@@ -198,9 +201,10 @@ async def test_promote_can_use_refined_wording(env):
 async def test_non_candidate_bucket_cannot_jump_into_i(env):
     plain = await env.create("一条普通记忆")
 
-    out = await i_core.i_core(promote=plain)
+    with pytest.raises(ToolInputError) as excinfo:
+        await i_core.i_core(promote=plain)
 
-    assert "不是 I 候选" in out
+    assert '不是 I 候选' in str(excinfo.value)
     assert all(b["metadata"]["type"] != "i" for b in env.buckets.values())
 
 
@@ -498,9 +502,10 @@ async def test_promote_counts_distinct_dream_dates_only(env):
         i_dream_dates=["2026-08-01", "2026-08-01", "2026-08-02"],
     )
 
-    out = await i_core.i_core(promote=bucket_id)
+    with pytest.raises(ToolInputError) as excinfo:
+        await i_core.i_core(promote=bucket_id)
 
-    assert f"2/{I_PROMOTE_THRESHOLD}" in out
+    assert f"2/{I_PROMOTE_THRESHOLD}" in str(excinfo.value)
     assert all(b["metadata"]["type"] != "i" for b in env.buckets.values())
 
 

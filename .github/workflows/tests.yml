@@ -126,7 +126,7 @@ jobs:
             sleep 1
           done
 
-      - name: Run 15-tool Docker MCP integration suite
+      - name: Run Docker MCP integration suite
         env:
           OMBRE_DOCKER_INTEGRATION_URL: http://127.0.0.1:18084/mcp
           OMBRE_DOCKER_EXPECT_COMPRESSION_PROVIDER: "1"

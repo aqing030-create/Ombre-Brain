@@ -2,7 +2,20 @@
 
 原文按 UTF-8 内容哈希写入 ``<vault>/_sources/src_<sha256>.source``。
 文件不参与普通 Markdown 扫描、浮现或语义索引；从 2.10.1 起会随完整
-本地/GitHub 备份迁移。只有 source_read 在精确匹配桶 ID 与标题后才会读取。
+本地/GitHub 备份迁移。
+
+**谁会读它**（3.0.0 起）：
+
+- **模型没有任何回读入口。** 3.0.0 删掉了 `source_read` / `source_attach` /
+  `source_detach` / `source_restore`，原文层对 MCP 只写不读。ADR-0001 里
+  「`source_read` 是唯一公开读取入口」那句已被取代，当前行为以
+  `docs/INTERNALS.md` §3.3.1 为准。
+- **进程内部仍有两个读者**，而且都不把原文交出去：`you/service.py` 与
+  `them/service.py` 在 `_build_edges` 里读出依据桶的原文当 `protected_texts`，
+  用来挡住「把依据的原文照抄成一条认识」。读进来只用于比对，不进任何返回值。
+
+这一段写清楚是因为「没有公开读取入口」和「没有读者」是两件事：把后者当成
+前者，会让人以为动这个文件不影响任何人。
 """
 
 from __future__ import annotations

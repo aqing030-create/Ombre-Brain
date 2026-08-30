@@ -25,7 +25,7 @@ from server_app import (
 )
 
 
-# 主连接器 /mcp：记忆本身的动作。
+# 唯一的连接器 /mcp。顺序即 server.py 里的注册顺序。
 EXPECTED_PUBLIC_MCP_TOOLS = (
     "breath",
     "breath_search",
@@ -38,13 +38,16 @@ EXPECTED_PUBLIC_MCP_TOOLS = (
     "release",
     "pulse",
     "plan",
+    "letter_write",
+    "letter_lock_update",
+    "letter_read",
     "feel",
     "I",
 )
 
-# /mcp-extra：信件。写信是一个行为，不是一段记忆——它有收件人、有时间锁，
-# 时间方向和记忆相反，所以自 3.2.0 起从主连接器挪出来。
-EXPECTED_EXTRA_MCP_TOOLS = (
+# 信件。3.2.0 挪到 /mcp-extra，3.4.0 并回主链路——「该不该在这时候用」是
+# 工具描述的事，拆连接器解决不了它，却要多维护一整套边界。
+EXPECTED_LETTER_TOOLS = (
     "letter_write",
     "letter_lock_update",
     "letter_read",
@@ -187,45 +190,40 @@ async def test_json_accept_shim_preserves_explicit_or_non_mcp_accept(path, accep
 
 
 @pytest.mark.asyncio
-async def test_letter_tools_live_on_the_extra_connector_only():
-    """信件三工具只在 /mcp-extra，主连接器一个都不该有。
+async def test_letter_tools_live_on_the_main_connector():
+    """信件三工具回到主连接器，且没有第二个 FastMCP 实例。
 
-    分开不是为了好看：工具数量本身会伤害可用性——claude.ai 在工具过多时
-    改用 tool_search 延迟加载，按描述搜工具、命中带随机性。信是低频且语义
-    独立的一层，占主连接器的位纯属浪费。
+    3.2.0 拆出去是为了工具数量——claude.ai 工具过多时会改用 tool_search 延迟
+    加载。但拆连接器管不住「该不该在这时候用」，那是工具描述的事；代价却是
+    实打实的第二套边界（严格参数校验、体积限制、鉴权），漏跟一处就是旁路。
     """
     import server
 
     main_names = {tool.name for tool in await server.mcp.list_tools()}
-    extra_names = [tool.name for tool in await server.mcp_extra.list_tools()]
 
-    assert extra_names == list(EXPECTED_EXTRA_MCP_TOOLS)
-    assert main_names.isdisjoint(EXPECTED_EXTRA_MCP_TOOLS)
-    assert server.mcp_extra.settings.streamable_http_path == "/mcp-extra"
-    # 两个连接器的传输设置必须一致，否则同一个客户端连两条路会有两种行为
-    assert server.mcp_extra.settings.json_response is True
-    assert server.mcp_extra.settings.stateless_http is True
+    assert set(EXPECTED_LETTER_TOOLS) <= main_names
+    # 实例本身必须消失，否则「并回主链路」只是又多挂了一份
+    assert not hasattr(server, "mcp_extra")
 
 
-def test_extra_connector_rejects_unknown_arguments():
-    """严格参数校验必须跟着工具走到新端点。
+def test_letter_tools_keep_strict_arguments_after_merge():
+    """并回主链路不能顺手弄丢严格参数校验。
 
-    否则 /mcp-extra 会成为一条旁路：参数拼错照样返回成功，而 letter_write
-    是能创建记忆的——写工具在未应用目标字段时仍然落库，是最难发现的那类错。
+    letter_write 是能创建记忆的写工具——参数拼错照样返回成功、目标字段没应用
+    却已经落库，是最难发现的那类错。搬家时最容易掉的就是这种跟着工具走的边界。
     """
     import server
 
-    for name in EXPECTED_EXTRA_MCP_TOOLS:
-        tool = server.mcp_extra._tool_manager.get_tool(name)
+    for name in EXPECTED_LETTER_TOOLS:
+        tool = server.mcp._tool_manager.get_tool(name)
         assert tool is not None, name
         assert tool.fn_metadata.arg_model.model_config.get("extra") == "forbid", name
 
 
-def test_extra_connector_route_is_mounted_and_guarded():
-    """/mcp-extra 必须真的挂上路由，并且被中间件的端点匹配器认出来。
+def test_extra_connector_route_is_gone():
+    """/mcp-extra 不再挂路由，也不再被当作 MCP 端点。
 
-    只搬路由不搬 session manager 的话，这条路径会在第一次请求时才炸；
-    匹配器不认它的话，它会绕过体积限制、CSRF 与鉴权。
+    匹配器如果还认它，那条已经不存在的路径会跳过管理面的体积限制才走到 404。
     """
     import server
     from web.request_limits import is_mcp_endpoint_path
@@ -239,13 +237,13 @@ def test_extra_connector_route_is_mounted_and_guarded():
         ),
         token_validator=lambda *_args, **_kwargs: False,
         lifecycle=RuntimeLifecycle(logger=RecordingLogger()),
-        mcp_extra=server.mcp_extra,
     )
     paths = {getattr(route, "path", None) for route in app.router.routes}
 
-    assert "/mcp-extra" in paths
     assert "/mcp" in paths
-    assert is_mcp_endpoint_path("/mcp-extra")
+    assert "/mcp-extra" not in paths
+    assert not is_mcp_endpoint_path("/mcp-extra")
+    assert is_mcp_endpoint_path("/mcp")
 
 
 @pytest.mark.asyncio
@@ -862,12 +860,14 @@ async def test_auth_middleware_ignores_forwarded_resource_from_untrusted_peer(
 
 
 @pytest.mark.asyncio
-async def test_auth_middleware_challenges_restored_mcp_extra_path():
-    """/mcp-extra 自 3.2.0 恢复为信件连接器，必须和 /mcp 一样受鉴权保护。
+async def test_auth_middleware_passes_retired_mcp_extra_path_through():
+    """/mcp-extra 自 3.4.0 再次退役，中间件放行让它落到 router 去拿 404。
 
-    2.8.5 到 3.1.0 之间它是退役路径，中间件放行让它落到 router 去拿 404。
-    恢复之后如果还放行，就等于开了一条免鉴权的写入旁路——letter_write
-    是能创建记忆的。
+    3.2.0 到 3.3.0 之间它是信件连接器，必须受鉴权保护。并回主链路后路由已经
+    不存在，继续在中间件里发 401 challenge 反而是错的信号——那会让客户端以为
+    换个 token 就能连上一个其实已经没有的端点。
+
+    这条与 `test_extra_connector_route_is_gone` 成对：一条管路由，一条管鉴权面。
     """
     downstream = RecordingASGIApp()
     middleware = MCPAuthMiddleware(
@@ -885,9 +885,9 @@ async def test_auth_middleware_challenges_restored_mcp_extra_path():
 
     await middleware(scope, _empty_receive, _collect_into(messages))
 
-    # 未通过鉴权：不得进入下游 router，且必须回 401 challenge
-    assert downstream.scopes == []
-    assert messages[0]["status"] == 401
+    # 退役路径：中间件不拦，交给 router（这里是 RecordingASGIApp，回 204）
+    assert downstream.scopes == [scope]
+    assert messages[0]["status"] == 204
 
 
 @pytest.mark.asyncio
@@ -987,6 +987,7 @@ async def test_runtime_lifecycle_starts_and_stops_every_owned_service(tmp_path):
         logger=logger,
         decay_engine=RecordingService("decay", events),
         embedding_outbox=RecordingService("outbox", events),
+        you_service=RecordingService("you", events),
         ensure_ollama_child=ollama_start,
         stop_ollama_child=ollama_stop,
         load_tunnel_config=lambda: {"auto_start": True, "token": "tunnel-token"},
@@ -1008,7 +1009,9 @@ async def test_runtime_lifecycle_starts_and_stops_every_owned_service(tmp_path):
         "decay:start",
         "ollama:start",
         "outbox:start",
+        "you:start",
         "github:0",
+        "you:stop",
         "outbox:stop",
         "decay:stop",
         "ollama:stop",

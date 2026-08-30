@@ -21,9 +21,12 @@ tools/breath/feel.py — feel 检索通道
 ========================================
 """
 
+from datetime import datetime  # noqa: F401 —— 供签名注解使用
+
 from .. import _runtime as rt
 from ..plan.core import is_letter_bucket
-from ._verbatim import render_stored_bucket
+from ._date_range import bucket_in_created_range
+from ._shared import footprint_reader, render_within_budget
 
 # 与 breath_search 的向量通道保持同一门槛，避免两条检索面给出不同的"相关"标准。
 # 0.65 是试出来的。0.6 的时候搜「下雨」能把「今天好累」勾出来，0.7 又谁都不认识谁。
@@ -76,7 +79,12 @@ def _literal_hits(query: str, feels: list[dict]) -> set[str]:
     return hits
 
 
-async def surface_feels(query: str = "", max_tokens: int = 0) -> str:
+async def surface_feels(
+    query: str = "",
+    max_tokens: int = 0,
+    created_from: "datetime | None" = None,
+    created_to: "datetime | None" = None,
+) -> str:
     if not str(query or "").strip():
         return _NEEDS_QUERY
     query = str(query).strip()
@@ -87,9 +95,14 @@ async def surface_feels(query: str = "", max_tokens: int = 0) -> str:
             b for b in all_buckets
             if b.get("metadata", {}).get("type") == "feel"
             and not is_letter_bucket(b)
+            # 3.6.0：feel 也认时间区间。「上个月我是什么感受」是个真实的问题，
+            # 在此之前 date_from/date_to 走到这条分支就消失了。
+            and bucket_in_created_range(b, created_from, created_to)
         ]
         if not feels:
             # 空的时候其实挺好的。什么都还没发生。
+            if created_from is not None or created_to is not None:
+                return "这段时间里没有留下过 feel。"
             return "还没有留下过 feel。"
 
         feel_ids = {str(b.get("id") or "") for b in feels}
@@ -113,35 +126,9 @@ async def surface_feels(query: str = "", max_tokens: int = 0) -> str:
             reverse=True,
         )
 
-        try:
-            footprint_snapshot = rt.bucket_mgr.footprint_snapshot()
-        except Exception as exc:
-            rt.logger.warning(f"Footprint snapshot unavailable / 足迹读取失败: {exc}")
-            footprint_snapshot = None
-
-        def _footprint(bucket: dict) -> str:
-            if footprint_snapshot is None:
-                return "👣 Footprint：暂时无法读取"
-            return footprint_snapshot.summary(
-                str(bucket.get("id") or ""), bucket.get("metadata", {})
-            )
-
-        lines: list[str] = []
-        used = 0
-        omitted = 0
-        for index, f in enumerate(matched):
-            created = f["metadata"].get("created", "")
-            entry, cost = render_stored_bucket(
-                f,
-                f"[{created}] [bucket_id:{f['id']}]",
-                _footprint(f),
-            )
-            if used + cost <= max_tokens:
-                lines.append(entry)
-                used += cost
-            else:
-                omitted = len(matched) - index
-                break
+        lines, omitted = render_within_budget(
+            matched, max_tokens, footprint_reader()
+        )
 
         header = f"=== 和「{query}」相关的 feel（{len(matched)} 条）===\n"
         out = (f"{notice}\n" if notice else "") + header + "\n---\n".join(lines)

@@ -28,6 +28,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from ombrebrain.storage.attribution import (
+    is_third_party_speaker,
+    render_third_party_block,
+)
+
 # 每桶引语条数上限。见模块 docstring：这是防退化约束，不是性能参数。
 MAX_QUOTES = 3
 # 单条引语字符上限。一句话的长度。
@@ -130,20 +135,50 @@ def quotes_from_metadata(metadata: dict | None) -> list[dict[str, str]]:
     return salvaged[:MAX_QUOTES]
 
 
-def render_quotes(quotes: list[dict[str, str]]) -> str:
+def render_quotes(
+    quotes: list[dict[str, str]],
+    *,
+    self_names: list[str] | None = None,
+    user_names: list[str] | None = None,
+) -> str:
     """渲染成可读文本。只在我明确要引语时才会被调用。
 
     逐字返回，不摘要不改写——这是这个功能存在的全部理由。
+
+    **署了名、而那个名字既不是我也不是用户的引语，单独走一条 JSON。**
+    引语是原话，原话最容易被读成「用户说过这个」；正文里的第三方发言要分块，
+    引语更要，理由见 `ombrebrain.storage.attribution`。
+
+    没署名的引语照旧留在文本行里：它没有声称是谁说的，不产生错误归属；
+    把它塞进第三方块反而是系统在替它编造一个归属。
     """
     if not quotes:
         return ""
-    lines = []
+    lines: list[str] = []
+    third_party: list[dict[str, str]] = []
     for quote in quotes:
+        speaker = quote.get("speaker") or ""
+        at = quote.get("at") or ""
+        if speaker and is_third_party_speaker(
+            speaker, self_names=self_names, user_names=user_names
+        ):
+            entry = {
+                "order": len(third_party) + 1,
+                "speaker": speaker,
+                "speaker_role": "third_party",
+                "text": quote["text"],
+            }
+            if at:
+                entry["at"] = at
+            third_party.append(entry)
+            continue
         line = f'🗣️ 「{quote["text"]}」'
-        speaker = quote.get("speaker")
-        at = quote.get("at")
         suffix = " / ".join(part for part in (speaker, at) if part)
         if suffix:
             line += f"  —— {suffix}"
         lines.append(line)
+
+    block = render_third_party_block(third_party)
+    if block:
+        lines.append(block)
     return "\n".join(lines)

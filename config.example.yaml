@@ -188,6 +188,13 @@ surfacing:
   breath_max_results: 20          # 1-50, hard cap of buckets returned per breath
   breath_max_tokens: 10000        # 500-40000, total token cap per breath; 40000 is a safety ceiling, not the default
   feel_max_tokens: 15000          # 500-20000, full-text budget for feel history; older feels collapse to one-line summaries
+  # 3.6.0: 浮现区给近 7 天创建的桶预留几个位置，按 created 倒序；其余位置照旧按权重。
+  # 权重是累积的——旧桶靠历史访问把分数攒得很高，新桶从 0 起步，永远排不进前列。
+  # 往打分公式里掺新近性等于把「新」和「重要」换算成同一种东西，那个换算率没有
+  # 正确答案；留位置不用回答这个问题，它只说「无论权重怎么排，总要有几条是最近的」。
+  # 按缺口补（权重自己送进来几条就少补几条），且不超过 max_results 的一半。
+  # 设 0 关闭，回到 3.5.0 的纯权重排序。
+  recent_slots: 3
   # iter 1.8: weighted sampling for breath surfacing mode（无参数浮现）
   # 加权采样：从 top_k 候选里按 score**(1/temperature) 抽 sample_k 个，让"想起"带轻微随机性。
   # 测试 fixture 里默认关 (enabled=false)，保证排序确定。生产可以开。
@@ -211,6 +218,27 @@ limits:
   max_grow_items: 100             # pre-split/digest item count cap; 0 disables
   max_pinned: 20                  # max pinned buckets; 0 disables check
   max_protected: 20               # protected 桶上限；0 关闭检查
+
+# --- them: 我对其他人的认识 / knowledge about other people ---
+# 默认关闭，由人类在前端显式开启（同 You）。关掉时 MCP 里没有这个工具，
+# breath / dream 的输出与没有这个模块时逐字一致。
+# max_tokens_per_person 是每个人的 token 上限，前端可改，200–4000。
+# 封顶不是性能考虑：them 是沉淀不是日记，能写满几千 token 的档案，
+# 这个模块就变成了在给人建档。
+them:
+  max_tokens_per_person: 1500
+
+# --- Speech attribution / 发言归属 ---
+# 记忆正文里写成 `名字：内容` 的行，如果那个名字既不是我、也不是用户，
+# 就会被移出正文、单独返回成一条 JSON（带 speaker），免得容易幻觉的模型
+# 把第三方说的话读成用户说的。
+# 内置称呼表已覆盖「我/助手/assistant/claude…」和「你/用户/user…」；
+# 这里补的是这台部署才知道的叫法——用户的名字、昵称、你这一侧的自称。
+# 补不全的后果是保守的：没登记的用户别名会被当第三方拆出来，
+# 拆出来的块里写明了归属，不会反过来变成「用户说过」。
+attribution:
+  self_names: []                  # 我这一侧的自称，如 ["小夜", "ombre"]
+  user_names: []                  # 用户的称呼，如 ["她", "poluz"]
 
 # --- iter 1.9 G: 桶类型默认值 / per-type frontmatter defaults ---
 # Applied at create() time only when caller doesn't pass that field.

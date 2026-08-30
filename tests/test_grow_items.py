@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from errors import ToolInputError
+
 import tools._runtime as rt
 from tools.grow import dispatch
 from tools.grow.core import grow_core, grow_items
@@ -477,11 +479,12 @@ async def test_items_why_remembered_counts_toward_metadata_budget(grow_rt):
 @pytest.mark.asyncio
 async def test_source_ranges_without_source_content_are_rejected(grow_rt):
     bucket_mgr, stub = grow_rt
-    out = await grow_items([
+    with pytest.raises(ToolInputError) as excinfo:
+        await grow_items([
         {"content": "事件", "title": "标题", "source_ranges": [[1, 1]]}
-    ])
+        ])
 
-    assert "source_ranges 需要同时提供 content" in out
+    assert 'source_ranges 需要同时提供 content' in str(excinfo.value)
     assert stub.analyze_calls == 0
     assert await bucket_mgr.list_all(include_archive=False) == []
 
@@ -489,11 +492,12 @@ async def test_source_ranges_without_source_content_are_rejected(grow_rt):
 @pytest.mark.asyncio
 async def test_invalid_source_range_rejects_batch_before_any_write(grow_rt):
     bucket_mgr, _stub = grow_rt
-    out = await grow_items(
-        [{"title": "越界", "content": "最终正文", "source_ranges": [[3, 4]]}],
-        source_content="只有一行",
-    )
-    assert "超出原文总行数" in out
+    with pytest.raises(ToolInputError) as excinfo:
+        await grow_items(
+            [{"title": "越界", "content": "最终正文", "source_ranges": [[3, 4]]}],
+            source_content="只有一行",
+        )
+    assert "超出原文总行数" in str(excinfo.value)
     assert await bucket_mgr.list_all(include_archive=False) == []
     assert not list((Path(bucket_mgr.base_dir) / "_sources").glob("*.source"))
 
@@ -532,9 +536,10 @@ async def test_obviously_shifted_source_ranges_are_rejected_before_write(grow_rt
         },
     ]
 
-    out = await dispatch(content=source, items=items)
+    with pytest.raises(ToolInputError) as excinfo:
+        await dispatch(content=source, items=items)
 
-    assert "source_ranges 疑似与 items 错位" in out
+    assert 'source_ranges 疑似与 items 错位' in str(excinfo.value)
     assert stub.analyze_calls == 0
     assert await bucket_mgr.list_all(include_archive=False) == []
     assert not list((Path(bucket_mgr.base_dir) / "_sources").glob("*.source"))

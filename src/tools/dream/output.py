@@ -40,6 +40,13 @@ tools/dream/output.py — dream 最终输出格式化
 ========================================
 """
 
+from ombrebrain.storage.attribution import (
+    known_person_names,
+    names_from_config,
+    render_third_party_block,
+    split_third_party_speech,
+)
+
 from .. import _runtime as rt
 from ..i import is_pending_candidate
 from ..plan.core import is_letter_bucket
@@ -62,9 +69,25 @@ def _bucket_data_block(
     content: str | None = None,
     footprint: str = "",
 ) -> str:
-    """渲染一条桶：前缀 + 清理过双链的正文 + 可选 footprint 行。"""
+    """渲染一条桶：前缀 + 清理过双链的正文 + 第三方发言块 + 可选 footprint 行。
+
+    第三方发言（`名字：内容`）与 breath 走同一套判定移出正文、另起一条 JSON，
+    理由见 `ombrebrain.storage.attribution`。dream 是全篇一起喂给模型自省的，
+    第三方的话混在自省材料里被当成用户的话，比在 breath 里错得更远。
+
+    `content` 传摘录时同样要拆——老 feel 的短摘录一样会包含第三方发言，
+    只对全文拆等于给截断路径留了个没有归属标记的出口。
+    """
     body = _content_of(bucket) if content is None else content
-    rendered = display_prefix + strip_wikilinks(body)
+    body, third_party = split_third_party_speech(
+        strip_wikilinks(body),
+        known_names=known_person_names(bucket),
+        **names_from_config(getattr(rt, "config", None)),
+    )
+    rendered = display_prefix + body
+    speech_block = render_third_party_block(third_party)
+    if speech_block:
+        rendered += f"\n{speech_block}"
     if footprint:
         rendered += f"\n{footprint}"
     return rendered

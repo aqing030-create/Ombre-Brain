@@ -33,6 +33,7 @@ I 是 OB 的自我感知层，但它不是日记，是沉淀物。
 ========================================
 """
 
+from errors import ToolInputError
 from datetime import datetime
 from typing import Optional
 
@@ -80,18 +81,19 @@ async def i_core(
     await rt.decay_engine.ensure_started()
 
     if promote:
+        # 两处 size 检查都在写入之前，超限时一个桶都没建。
         size_err = check_content_size(content) if content.strip() else ""
         if size_err:
-            return size_err
+            raise ToolInputError(size_err)
         return await _promote_candidate(promote, content.strip())
     if read or not content.strip():
         return await _read_i(limit)
     if aspect and aspect not in _VALID_ASPECTS:
         choices = ", ".join(sorted(_VALID_ASPECTS))
-        return f"aspect 无效：{aspect}。可选值: {choices}"
+        raise ToolInputError(f"aspect 无效：{aspect}。可选值: {choices}")
     size_err = check_content_size(content)
     if size_err:
-        return size_err
+        raise ToolInputError(size_err)
     return await _write_candidate(content.strip(), aspect)
 
 
@@ -149,7 +151,7 @@ async def _write_candidate(content: str, aspect: str) -> str:
             event_actor="llm",
         )
     except Exception as e:
-        return f"写入失败: {safe_error_detail(e)}"
+        raise ToolInputError(f"写入失败: {safe_error_detail(e)}")
 
     try:
         marked = await rt.bucket_mgr.update(
@@ -182,9 +184,11 @@ async def _promote_candidate(bucket_id: str, content_override: str) -> str:
     try:
         bucket = await rt.bucket_mgr.get(bucket_id)
     except Exception as e:
-        return f"读取失败: {safe_error_detail(e)}"
+        raise ToolInputError(f"读取失败: {safe_error_detail(e)}")
     if not bucket:
-        return f"找不到候选 {bucket_id}（可能已经衰减归档——那本身就是一种答案）。"
+        raise ToolInputError(
+            f"找不到候选 {bucket_id}（可能已经衰减归档——那本身就是一种答案）。"
+        )
 
     meta = bucket.get("metadata") or {}
     stage = str(meta.get("i_stage") or "")
@@ -192,24 +196,22 @@ async def _promote_candidate(bucket_id: str, content_override: str) -> str:
         target = meta.get("i_promoted_to") or "?"
         return f"{bucket_id} 已经沉淀过了 → {target}。"
     if not is_pending_candidate(bucket):
-        return (
-            f"{bucket_id} 不是 I 候选，不能直接进 I。"
-            "自我认知要先写成「我觉得……」的候选，经过 dream 才可能沉淀。"
-        )
+        raise ToolInputError(f"{bucket_id} 不是 I 候选，不能直接进 I。"
+            "自我认知要先写成「我觉得……」的候选，经过 dream 才可能沉淀。")
 
     dates = dream_dates(meta)
     if len(dates) < I_PROMOTE_THRESHOLD:
         missing = I_PROMOTE_THRESHOLD - len(dates)
         seen = "、".join(dates) if dates else "还没有"
-        return (
+        raise ToolInputError(
             f"还不够。{bucket_id} 被 dream 见证过 {len(dates)}/{I_PROMOTE_THRESHOLD} 次"
-            f"（{seen}），还差 {missing} 次。\n"
+            f"（{seen}），还差 {missing} 次。"
             "不是形式——没有在几次不同的梦里都站得住，它就还只是一时的想法。"
         )
 
     body = content_override or str(bucket.get("content") or "").strip()
     if not body:
-        return f"{bucket_id} 正文是空的，没有可以沉淀的内容。"
+        raise ToolInputError(f"{bucket_id} 正文是空的，没有可以沉淀的内容。")
 
     aspect = _aspect_of(meta)
     tags = ["__i__"]
@@ -232,7 +234,7 @@ async def _promote_candidate(bucket_id: str, content_override: str) -> str:
             event_actor="llm",
         )
     except Exception as e:
-        return f"沉淀失败: {safe_error_detail(e)}"
+        raise ToolInputError(f"沉淀失败: {safe_error_detail(e)}")
 
     try:
         await rt.bucket_mgr.update(
@@ -303,7 +305,7 @@ async def _read_i(limit: int) -> str:
     try:
         all_buckets = await rt.bucket_mgr.list_all(include_archive=False)
     except Exception as e:
-        return f"读取失败: {safe_error_detail(e)}"
+        raise ToolInputError(f"读取失败: {safe_error_detail(e)}")
 
     i_buckets = [
         b for b in all_buckets

@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import tools._runtime as rt
+from errors import ToolInputError
 from ombrebrain.storage.quote_store import MAX_QUOTES, MAX_QUOTE_CHARS
 from tools.breath import dispatch as breath_dispatch
 from tools.hold import dispatch as hold_dispatch
@@ -97,22 +98,26 @@ async def test_quote_is_stored_in_metadata_not_in_body(bucket_mgr):
 
 @pytest.mark.asyncio
 async def test_overlong_quote_is_rejected_and_nothing_is_written(bucket_mgr):
-    """超限拒绝要**整条调用失败**，不能悄悄存个没有引语的桶。"""
-    _install_runtime(bucket_mgr)
-    out = await hold_dispatch(content=BODY, quotes=["字" * (MAX_QUOTE_CHARS + 1)])
+    """超限拒绝要**整条调用失败**，不能悄悄存个没有引语的桶。
 
-    assert "未创建任何桶" in out
+    「失败」的判据是抛异常而不是返回一句说明：返回字符串在 MCP 侧是
+    isError=False，调用方会把它当成一次成功的写入。
+    """
+    _install_runtime(bucket_mgr)
+    with pytest.raises(ToolInputError, match="未创建任何桶"):
+        await hold_dispatch(content=BODY, quotes=["字" * (MAX_QUOTE_CHARS + 1)])
+
     assert (await bucket_mgr.list_all()) == []
 
 
 @pytest.mark.asyncio
 async def test_too_many_quotes_is_rejected_and_nothing_is_written(bucket_mgr):
     _install_runtime(bucket_mgr)
-    out = await hold_dispatch(
-        content=BODY, quotes=[f"第{i}句" for i in range(MAX_QUOTES + 1)]
-    )
+    with pytest.raises(ToolInputError, match="未创建任何桶"):
+        await hold_dispatch(
+            content=BODY, quotes=[f"第{i}句" for i in range(MAX_QUOTES + 1)]
+        )
 
-    assert "未创建任何桶" in out
     assert (await bucket_mgr.list_all()) == []
 
 
@@ -291,9 +296,53 @@ def test_tool_description_frames_quotes_as_my_own_question():
     """
     import server
 
-    for tool in (server.breath_search, server.hold):
+    for tool in (server.breath_search, server.hold, server.trace):
         doc = (tool.__doc__ or "") if not hasattr(tool, "fn") else (tool.fn.__doc__ or "")
         if "quotes" not in doc:
             continue
         for banned in ("当用户要求", "用户要求时", "按用户要求", "应用户"):
             assert banned not in doc, f"{tool} 的描述把引语写成了响应用户要求：{banned}"
+
+
+def _doc_of(tool) -> str:
+    return (tool.fn.__doc__ or "") if hasattr(tool, "fn") else (tool.__doc__ or "")
+
+
+def test_write_side_description_says_the_default_is_none():
+    """写入侧的措辞必须把「不放」立成默认，否则 3 条会被当成配额去填。
+
+    这个通道退化成"存原文"不需要改任何代码——只要描述读起来像
+    「每条记忆可以带最多 3 句引语」，模型就会尽量凑满 3 句。
+    上限是硬的，措辞才决定实际会写进来多少。
+    """
+    import server
+
+    doc = _doc_of(server.hold)
+    assert "上限不是配额" in doc
+    assert "拿不准就别放" in doc
+
+
+def test_read_side_description_denies_a_full_text_entry():
+    """读取侧必须说清没有「返回全文」这回事。
+
+    不说清的话，quotes=True 读起来就像原文层的入口，模型会反复来要更多——
+    而原文层正是因为「系统自动存全量、事后随时可查」被删掉的。
+    """
+    import server
+
+    doc = _doc_of(server.breath_search)
+    assert "不是原文" in doc
+    assert "全文" in doc
+
+
+def test_trace_description_states_the_no_backfill_boundary():
+    """trace 的描述必须写明只能改和删。
+
+    「可改可删」和「可编辑」只差一个字，但后者会让模型以为可以往里加——
+    而能加就等于任何一句话都能被事后追认为「当时就知道重要」。
+    """
+    import server
+
+    doc = _doc_of(server.trace)
+    assert "quotes_replace" in doc
+    assert "不能补录" in doc

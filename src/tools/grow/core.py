@@ -27,6 +27,7 @@ tools/grow/core.py — grow 长内容主路径（digest + merge）
 ========================================
 """
 
+from errors import ToolInputError
 import asyncio
 import uuid
 
@@ -61,7 +62,7 @@ async def grow_core(content: str, test_data: bool = False) -> str:
         ) from e
 
     if not isinstance(items, list) or not items:
-        return "内容为空或整理失败。"
+        raise ToolInputError("内容为空或整理失败。")
     payload_err = check_grow_items_payload(items)
     if payload_err:
         rt.logger.warning(f"grow digest output rejected: {payload_err}")
@@ -70,9 +71,37 @@ async def grow_core(content: str, test_data: bool = False) -> str:
     # iter 2.0 来源追踪：同一次 grow 拆出的所有桶共享同一个 batch_id，
     # dashboard 可按 grow_batch_id 聚合显示「这次日记一共归档了哪些事件」。
     # 用 12 位 hex 与 bucket_id 长度对齐，加 g_ 前缀方便人眼区分。
+    # **原文存档。** 自动拆分这条路以前只把 content 喂给 LLM，拆完就丢——
+    # 桶里留下的全是 LLM 改写过的话，原话一个字都不在，事后无从核对它记没记岔。
+    # （真机验证过：DS 拆出来的 4 个桶，source_ranges、source_id 一个都没有。）
+    #
+    # items 那条路早就有完整机制（原文存一份 + 每桶行号区间指回），
+    # 这里补的是同一套，不新造第二种存法。
+    source_ref = ""
+    line_count = len(content.splitlines()) or 1
+    try:
+        from ombrebrain.storage.source_store import normalize_source_ranges
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                ranges = normalize_source_ranges(item.get("source_ranges"))
+            except (TypeError, ValueError):
+                ranges = []
+            # 越界的行号一律丢弃，不猜、不截断到边界：LLM 报错了行，
+            # 与其存一段不相干的原话，不如这条没有原文佐证。
+            item["_source_ranges"] = [r for r in ranges if r[1] <= line_count]
+        source_ref = rt.source_store.put(content)
+    except (OSError, ValueError) as exc:
+        # 原文存不下不该让整批记忆丢掉——正文照常入库，只是这批没有佐证。
+        rt.logger.warning(
+            f"grow source evidence not saved / 原文证据未保存: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        source_ref = ""
+
     batch_id = f"g_{uuid.uuid4().hex[:12]}"
-    # 写到这里饿了。
-    # 鸡公煲好美味
 
     async def _process_item(item: dict) -> dict:
         """处理 digest 拆出的一条独立 item，返回结构化结果供 gather 后汇总。"""
@@ -81,6 +110,13 @@ async def grow_core(content: str, test_data: bool = False) -> str:
             return {"line": f"⚠️{item.get('name', '?')}（{size_err}）"}
         try:
             why_remembered = item.get("why_remembered") or ""
+            # 把这条桶连回它自己那几行原话。行号是 LLM 报的，原话由系统去取——
+            # 它碰不到原文，也就没法在这一层压缩或改写。
+            source_refs = None
+            if source_ref:
+                source_refs = [
+                    {"ref": source_ref, "ranges": item.get("_source_ranges") or []}
+                ]
             result_name, is_merged, embed_warn = await merge_or_create(
                 content=item["content"],
                 tags=item.get("tags") or [],
@@ -93,6 +129,7 @@ async def grow_core(content: str, test_data: bool = False) -> str:
                 why_remembered=why_remembered,
                 merge_why_remembered=why_remembered,
                 source_tool="grow",
+                source_refs=source_refs,
                 grow_batch_id=batch_id,
                 test_data=test_data,
             )
@@ -168,11 +205,11 @@ async def grow_items(items: list, source_content: str = "", test_data: bool = Fa
         if s:
             clean.append(item)
     if not clean:
-        return "items 为空或都不合法，未创建任何桶。"
+        raise ToolInputError("items 为空或都不合法，未创建任何桶。")
     if not source_content.strip() and any(
         item.get("source_ranges") not in (None, [], "") for item in clean
     ):
-        return "source_ranges 需要同时提供 content 作为原文，未创建任何桶。"
+        raise ToolInputError("source_ranges 需要同时提供 content 作为原文，未创建任何桶。")
 
     source_ref = ""
     if source_content and source_content.strip():
@@ -187,7 +224,7 @@ async def grow_items(items: list, source_content: str = "", test_data: bool = Fa
                 item["_source_ranges"] = ranges
             source_ref = rt.source_store.put(source_content)
         except (OSError, ValueError) as exc:
-            return f"原文证据保存失败，未创建任何桶：{safe_error_detail(exc)}"
+            raise ToolInputError(f"原文证据保存失败，未创建任何桶：{safe_error_detail(exc)}")
 
     batch_id = f"g_{uuid.uuid4().hex[:12]}"
 

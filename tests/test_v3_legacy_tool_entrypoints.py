@@ -3,6 +3,7 @@ import pytest
 from tools import _runtime as rt
 import tools.breath as breath_mod
 import tools.hold as hold_mod
+from errors import ToolInputError
 import tools.trace.core as trace_mod
 
 
@@ -83,14 +84,15 @@ async def test_hold_rejects_explicit_domain_for_feel(monkeypatch) -> None:
     rt.init(config={}, decay_engine=_Decay(), mark_op=None)
     monkeypatch.setattr(hold_mod, "store_feel", fake_store_feel)
 
-    result = await hold_mod.dispatch(
-        content="feel memory",
-        feel=True,
-        source_bucket="source-1",
-        domain="生活",
-    )
-
-    assert result == "feel 的 domain 固定为 feel，不能显式覆盖。"
+    # 拒绝必须是抛出，不是返回一句说明：返回字符串在 MCP 侧是 isError=False，
+    # 调用方会以为这条 feel 写成功了。
+    with pytest.raises(ToolInputError, match="feel 的 domain 固定为 feel"):
+        await hold_mod.dispatch(
+            content="feel memory",
+            feel=True,
+            source_bucket="source-1",
+            domain="生活",
+        )
     assert called is False
 
 
@@ -101,9 +103,10 @@ async def test_trace_core_records_v3_tool_event_without_content_body(monkeypatch
     rt.init(config={}, mark_op=None)
     monkeypatch.setattr(rt, "record_v3_tool_event", lambda name, payload: calls.append((name, payload)))
 
-    result = await trace_mod.trace_core(bucket_id="", content="private replacement", delete=True)
+    with pytest.raises(ToolInputError) as excinfo:
+        await trace_mod.trace_core(bucket_id="", content="private replacement", delete=True)
 
-    assert "bucket_id" in result
+    assert 'bucket_id' in str(excinfo.value)
     assert calls[0][0] == "trace"
     assert calls[0][1]["delete"] is True
     assert calls[0][1]["content_length"] == len("private replacement")
@@ -117,13 +120,14 @@ async def test_trace_core_records_v3_tool_event_without_patch_bodies(monkeypatch
     rt.init(config={}, mark_op=None)
     monkeypatch.setattr(rt, "record_v3_tool_event", lambda name, payload: calls.append((name, payload)))
 
-    result = await trace_mod.trace_core(
+    with pytest.raises(ToolInputError) as excinfo:
+        await trace_mod.trace_core(
         bucket_id="",
         old_str="private old fragment",
         new_str="private new fragment",
-    )
+        )
 
-    assert "bucket_id" in result
+    assert 'bucket_id' in str(excinfo.value)
     assert calls[0][0] == "trace"
     assert calls[0][1]["content_length"] == 0
     assert calls[0][1]["old_str_length"] == len("private old fragment")

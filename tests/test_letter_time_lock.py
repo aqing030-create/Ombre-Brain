@@ -4,6 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from errors import ToolInputError
+
 import tools._runtime as rt
 from tools.plan.core import (
     PERMANENT_UNLOCK_DATE,
@@ -93,18 +95,21 @@ async def test_locked_proxy_write_is_rejected_but_does_not_echo_body(bucket_mgr,
     monkeypatch.setenv("AI_NAME", "张三")
     install_runtime(bucket_mgr)
     secret = "never echo this body"
-    result = await letter_write(author="user", content=secret, lock_type="permanent")
-    assert "不能替" in result
-    assert secret not in result
+    with pytest.raises(ToolInputError) as excinfo:
+        await letter_write(author="user", content=secret, lock_type="permanent")
+    assert '不能替' in str(excinfo.value)
+    # 拒绝的正文里一个字都不能带上信的内容——代存被拒时正文不该回显。
+    assert secret not in str(excinfo.value)
 
 
 @pytest.mark.asyncio
 async def test_generic_ai_name_rejects_only_locked_creation(bucket_mgr, monkeypatch):
     monkeypatch.delenv("AI_NAME", raising=False)
     install_runtime(bucket_mgr)
-    rejected = await letter_write(author="ai", content="locked", lock_type="permanent")
+    with pytest.raises(ToolInputError) as excinfo:
+        await letter_write(author="ai", content="locked", lock_type="permanent")
     normal = await letter_write(author="ai", content="ordinary", lock_type="none")
-    assert "实际关系名" in rejected
+    assert '实际关系名' in str(excinfo.value)
     assert created_id(normal)
 
 
@@ -168,8 +173,9 @@ async def test_non_owner_cannot_change_lock(bucket_mgr):
         unlock_date=PERMANENT_UNLOCK_DATE,
         locked_by="human",
     )
-    result = await letter_lock_update(letter_id, "none", caller_side="ai")
-    assert "只有" in result
+    with pytest.raises(ToolInputError) as excinfo:
+        await letter_lock_update(letter_id, "none", caller_side="ai")
+    assert '只有' in str(excinfo.value)
     assert (await bucket_mgr.get(letter_id))["metadata"]["lock_type"] == "permanent"
 
 
@@ -548,8 +554,9 @@ async def test_other_side_cannot_relock_now_public_letter(bucket_mgr):
         locked_by="human",
     )
 
-    result = await letter_lock_update(letter_id, "permanent", caller_side="ai")
-    assert "只有" in result
+    with pytest.raises(ToolInputError) as excinfo:
+        await letter_lock_update(letter_id, "permanent", caller_side="ai")
+    assert '只有' in str(excinfo.value)
     current = await bucket_mgr.get(letter_id)
     assert current["metadata"]["lock_type"] == "none"
     assert current["metadata"]["locked_by"] == "human"

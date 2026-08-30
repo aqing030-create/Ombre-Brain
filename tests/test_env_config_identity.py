@@ -232,7 +232,14 @@ async def test_compress_client_rebuild_failure_is_not_reported_as_success(
     assert os.environ["OMBRE_COMPRESS_BASE_URL"] == "https://old.example/v1"
 
 
-def test_v1_environment_names_remain_compatible(monkeypatch, tmp_path):
+def test_v1_environment_names_remain_compatible(request, monkeypatch, tmp_path):
+    # load_config() 把 legacy PASSWORD 映射成 OMBRE_DASHBOARD_PASSWORD 时是直接写
+    # os.environ 的。monkeypatch.delenv 在变量原本就不存在时不记录任何东西，于是
+    # 还原不了这个「测试期间才被创建」的变量——它会泄漏到本次 session 的后续用例，
+    # 让 web/auth 的用例在随机序下变红（env 密码模式会让请求在 JSON 校验前短路）。
+    request.addfinalizer(
+        lambda: os.environ.pop("OMBRE_DASHBOARD_PASSWORD", None)
+    )
     monkeypatch.delenv("OMBRE_COMPRESS_API_KEY", raising=False)
     monkeypatch.delenv("OMBRE_COMPRESS_BASE_URL", raising=False)
     monkeypatch.delenv("OMBRE_DASHBOARD_PASSWORD", raising=False)

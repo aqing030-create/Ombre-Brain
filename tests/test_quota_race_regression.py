@@ -17,6 +17,8 @@ from unittest.mock import MagicMock
 import asyncio
 import pytest
 
+from errors import ToolInputError
+
 import tools._runtime as rt
 from tools._common import (
     _quota_turn,
@@ -101,11 +103,18 @@ async def test_concurrent_trace_protect_does_not_exceed_independent_cap(bucket_m
         for i in range(5)
     ]
 
-    await asyncio.gather(*[
+    结果 = await asyncio.gather(*[
         trace_core(bucket_id, protected=1)
         for bucket_id in candidates
-    ])
+    ], return_exceptions=True)
 
+    # 配额只剩一个位置：一个成功，其余四个必须被明确拒绝，
+    # 不能有任何一个「静默没保护上却报成功」。
+    被拒 = [r for r in 结果 if isinstance(r, ToolInputError)]
+    成功 = [r for r in 结果 if not isinstance(r, BaseException)]
+    assert len(成功) == 1, f"应当只有一个抢到配额，实际 {len(成功)} 个"
+    assert len(被拒) == 4
+    assert all("已达上限" in str(e) for e in 被拒)
     assert await count_protected() == 3
     protected_candidates = 0
     for bucket_id in candidates:

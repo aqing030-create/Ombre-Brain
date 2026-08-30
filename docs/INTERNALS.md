@@ -34,7 +34,7 @@
 
 ## 0. 功能总览
 
-Ombre Brain 是一套给 LLM 用的长期情绪记忆系统。它的边界是「时间里发生的事」，不是「你是谁」（身份层交给官方记忆）。每条记忆 = 一个 Markdown 文件（YAML frontmatter + 正文），原生兼容 Obsidian 浏览/编辑。
+Ombre Brain 是一套给 LLM 用的长期情绪记忆系统。普通记忆的边界是「时间里发生的事」，不是「你是谁」（身份层交给官方记忆）。每条记忆 = 一个 Markdown 文件（YAML frontmatter + 正文），原生兼容 Obsidian 浏览/编辑。默认关闭的 `You` 是例外但不是新真源：只有人类从 Ombre 设置页开启后，才从这些事件证据形成受限的内部派生认识。
 
 记忆按桶类型分目录存放：`dynamic/`（普通，会衰减）、`permanent/`（钉选/固化，importance=10、不衰减）、`feel/`（模型自省，固定分 50，永不浮现到普通 breath）、`plans/active/`（待办，固定分 50，不衰减不浮现）、`letters/history/`（信件，原文永久保留，不参与压缩/合并/衰减）、`archive/`（已淘汰）。
 
@@ -84,15 +84,15 @@ Ombre-Brain/
            ▼                                              ▼
   ┌─────────────────────────────┐      ┌───────────────────────────────┐
   │ src/tools/ MCP 业务包（薄封装→子包）│      │ src/web/ HTTP/Dashboard 路由层      │
-  │   breath/ hold/ grow/ dream/         │      │   16 个域模块，每个 register(mcp)   │
-  │   trace/ anchor/ plan/ i/            │      │   config_api/embedding/buckets/... │
+  │   breath/ hold/ grow/ dream/         │      │   各域模块，每个 register(mcp)      │
+  │   trace/ anchor/ plan/ i/ you/       │      │   config_api/embedding/buckets/... │
   │   _runtime.py · _common.py           │      │   ollama_local/github/...           │
   └───────────┬─────────────────────┘      │   共享依赖见 web/_shared.py          │
               │                              └──────────────┬────────────────┘
            ┌──┴────────────┬───────────────┬───────────────┴────┐
            ▼               ▼               ▼                    ▼
    bucket_manager   decay_engine    dehydrator         embedding_engine
-   桶 CRUD+搜索     遗忘曲线         脱水/打标/合并    向量化+余弦检索
+   桶 CRUD+搜索     遗忘曲线         脱水/打标/You     向量化+余弦检索
    (+bm25_index)                                       (门面+单 API 后端)
            │               │               │                    │
            └───────┬───────┴───────────────┴────────────────────┘
@@ -107,20 +107,22 @@ Ombre-Brain/
 
 每个模块「干什么、边界在哪、依赖谁」：
 
-- **server.py**（约 1000 行）— MCP 服务入口。创建所有组件后调 `tools._runtime.init(...)` 注入依赖；16 个薄封装全部以 `@mcp.tool()` 直接注册到唯一公开实例；对外只暴露 **单连接器 `/mcp`**。
+- **server.py**（约 1000 行）— MCP 服务入口。创建所有组件后调 `tools._runtime.init(...)` 注入依赖；16 个基础工具（含信件三件套）全部注册到唯一连接器 `/mcp`，`YouToolGate` 与 `ThemToolGate` 各按自己的持久开关在其上动态增减对应的可选工具（只开一个 17，两个都开 18）。
 - **tools/**（MCP 工具应用层）— 详见下面「1.x tools/ 包结构」。
-- **web/**（HTTP/Dashboard 路由层）— 详见下面「1.y web/ 包结构」。从旧 server.py 巨石里拆出的 16 个域模块，每个导出 `register(mcp)`；cookie/CSRF/会话鉴权等共享依赖在 `web/_shared.py`（类比 `tools/_runtime.py`）。
+- **web/**（HTTP/Dashboard 路由层）— 详见下面「1.y web/ 包结构」。各域模块导出 `register(mcp)`；cookie/CSRF/会话鉴权等共享依赖在 `web/_shared.py`（类比 `tools/_runtime.py`）。
 - **bucket_manager.py** — 桶 CRUD + 多维加权搜索 + `touch()` 激活刷新 + `_time_ripple()` 时间涟漪 + 文件搬运（archive/permanent 之间）。
 - **decay_engine.py** — `calculate_score(metadata)` 单桶活跃度评分；`run_decay_cycle()` 周期扫描 → auto-resolve / archive；后台 asyncio 循环。
-- **dehydrator.py** — 通过 OpenAI 兼容 LLM API 做四件事：`analyze()` 自动打标、`merge()` 内容融合、`digest()` 日记拆分、`dehydrate()` 摘要压缩；外加 `judge_plan_resolution()` 给 plan 自动结案做 LLM 双判。带 SQLite 缓存避免重复 API 调用。
+- **dehydrator.py** — 通过 OpenAI 兼容 LLM API 做自动打标、内容融合、日记拆分、摘要压缩、plan 双判；`You` 另有无原文 fallback 的候选抽取、审视与语义零件生成。普通脱水带 SQLite 缓存避免重复 API 调用。
 - **embedding_engine.py** — 「门面 + 后端」两层向量化：后端只有**一个 OpenAI 兼容 API 实现**（默认 Gemini 云端）；门面负责 SQLite 存取、余弦搜索、孤儿对账、模型/维度一致性校验（不一致记 OB-W005，不阻止启动）。**本地离线向量化**不是另一个后端，而是把 `base_url` 指向 OB 托管的 Ollama 边车（bge-m3，由 `web/ollama_local.py` 拉起子进程）。旧文档的「bge-small-zh / sentence-transformers 懒加载」已废弃。
 - **bm25_index.py** — BM25 稀疏检索（jieba 中文分词），给 `bucket_manager.search()` 提供 TF-IDF 加权的关键词召回（Dim 7）。`rank_bm25` / `jieba` 是软依赖，未装则静默 no-op，不影响其余维度；索引由 BucketManager 持有，写后脏标记、search 时懒重建。
 - **import_memory.py** — Claude JSON / ChatGPT / DeepSeek / Markdown / 纯文本五种格式的历史对话导入，超长单轮无损分块 + 断点续传 + 精确内容幂等去重 + 词频规律检测。导入只新建桶，不按语义合并旧桶；新桶持久化 `imported: true` 与 `source_tool: import`，创建/最后活跃时间均取导入时刻。
-- **ombrebrain/storage/backup_archive.py** — 本地备份格式：读取 Markdown 与 `_sources/src_<sha256>.source`、用 SQLite backup API 生成一致性快照、写 `backup_manifest.json`（逐文件 size + SHA-256）；导出/导入同时限制 ZIP 文件数、体积和压缩率，并校验证据路径、文件名哈希、UTF-8，拒绝路径穿越、符号链接、重复路径和损坏清单。
+- **ombrebrain/you/** — `You` 的固定领域策略、三维作用域、SQLite 权威状态、读时依据校验、投影、读回/写入/撤回与动态 MCP 工具门禁。数据库位于 `<buckets_dir>/.you/you.sqlite3`，首次显式开启前不创建。库里的 `outbox` 表是自动派生时代的遗留，已无消费者（见 §3.12）。
+- **ombrebrain/them/** — `them` 的同构实现：按人分份的 SQLite 状态、两道结构性闸（两个记忆桶作依据 + 三个不同自然日重申）、关系描述拦截、两类来源（自己遇到的 / 听人类说的）、独立通道浮现与动态 MCP 工具门禁。禁止清单直接复用 `you.safety`，不抄第二份。数据库位于 `<buckets_dir>/.them/them.sqlite3`，首次显式开启前不创建。详见 §3.13。
+- **ombrebrain/storage/backup_archive.py** — 本地备份格式：读取 Markdown 与 `_sources/src_<sha256>.source`、用 SQLite backup API 生成 embeddings 和可选 `You` 一致性快照、写 `backup_manifest.json`（逐文件 size + SHA-256）；导出/导入同时限制 ZIP 文件数、体积和压缩率，并校验路径、证据哈希、UTF-8、SQLite 完整性与 `You` 固定 schema，拒绝路径穿越、符号链接、重复路径和损坏清单。
 - **migrate_engine.py** — 完整记忆包导入：把 `/api/export` 产生的 zip 增量 merge 进当前系统；证据在任何桶写入前完成校验并按不可变语义安装；识别 ID 冲突（skip/overwrite/keep_both），兼容新旧 embedding schema。模型不一致或快照缺向量时写入耐久 outbox，不把网络调用放在恢复事务里。旧版无清单包可兼容导入并标记未验证；旧包缺被引用证据时保留事件桶但明确警告。
 - **ombrebrain/storage/vault_health.py** — Dashboard 与 `tools/check_buckets.py` 共用的只读健康检查：Markdown 解析、重复 ID、越界软链接、SQLite `quick_check`、孤儿向量、缺失且未进入 outbox 的向量。
 - **migration_engine.py** — embedding 后端切换（local ↔ api）时后台全量重算向量：先写 `embeddings.db.migrating`、跑完原子 swap；断点续传 + 失败跳过 + 进度文件供前端轮询。
-- **github_sync.py** — 把 `buckets_dir` 下的 `.md` 与 `_sources/src_<sha256>.source` 经 GitHub Git Trees API 批量提交做云端备份（不传 embeddings.db）；备份前交叉检查全部 `source_refs`，并在清单标记引用闭包完整。恢复时先暂存并复核全部 blob、清单、证据文件名哈希、UTF-8、引用闭包与目标配置大小上限，再安装全部证据，最后才覆盖 Markdown，避免 tree 顺序制造悬空引用。v2.10.0 及更早的清单没有闭包标记，缺证据时兼容恢复事件桶但返回醒目警告。支持手动 + 定时自动同步，路由在 `web/github.py`。原文以明文进入仓库，运维必须使用可信私有仓库。
+- **github_sync.py** — 把 `buckets_dir` 下的 `.md`、`_sources/src_<sha256>.source` 与可选 `.you/you.sqlite3` 事务快照经 GitHub Git Trees API 批量提交做云端备份（不传 embeddings.db）；备份前交叉检查全部 `source_refs`，并在清单标记引用闭包完整。恢复时先暂存并复核全部 blob、清单、证据哈希、UTF-8、引用闭包、`You` schema 与目标大小上限，再发布。支持手动 + 定时自动同步，路由在 `web/github.py`。原文和 `You` 派生状态都会进入仓库，运维必须使用可信私有仓库。
 - **reclassify_api.py** — 一次性脚本：把历史落在「未分类/」的桶重新 `analyze()` 打标并搬到正确 domain 目录，只改 frontmatter 与文件位置。
 - **errors.py** — OB 统一错误码（如 OB-W005 embedding 模型漂移、OB-Startup 系列），供各模块抛结构化异常。
 
@@ -159,7 +161,7 @@ src/tools/
 ```
 src/web/
 ├── _shared.py      # 共享依赖容器：config / logger / 各业务引擎 + cookie 会话鉴权 helper
-│                  #   （类比 tools/_runtime；embedding_engine 热替换时也写这里）
+│                  #   （类比 src/tools/_runtime；embedding_engine 热替换时也写这里）
 ├── auth.py         # /auth/*：密码登录 / 设置 / 改密 / 注销 / 会话
 ├── oauth.py        # MCP Remote Auth（OAuth 2.0）相关 .well-known 与 token 端点
 ├── dashboard.py    # 根路由 / 与 /dashboard 跳转、HTML 下发
@@ -218,10 +220,11 @@ hold / grow（Claude 决策）
                         └─ 后台单 worker 生成向量；失败指数退避、重启后续跑
               │
               ▼
-       存活期：每次 breath(query) 命中 → bucket_mgr.touch()
+       存活期：trace(id, reinforce=True) → bucket_mgr.touch()
                                            ├─ last_active = now
                                            ├─ activation_count += 1
                                            └─ _time_ripple()  ±48h 邻近桶 +0.3
+              （3.6.0 起检索命中**不再** touch；强化是读完之后的显式动作）
               │
               ▼
        decay_engine 后台循环（每 24h）→ run_decay_cycle()
@@ -231,7 +234,9 @@ hold / grow（Claude 决策）
         └─ 否 → 继续存活
 ```
 
-(数据流约束：`touch()` 只在**检索命中**时调用，**浮现模式不调用**——这是为了不让 `breath()` 自动浮现重置衰减计时器，否则高活跃桶会永远霸占浮现位。)
+(数据流约束（3.6.0 改）：`touch()` 只由 `trace(bucket_id, reinforce=True)` 触发，**所有读取路径都不调用**——浮现、`breath_search`、按完整 ID 取桶一律只读。
+
+原本 `touch()` 在检索命中时调用，于是「被频繁查询」逐渐等价于「更重要」：为核对事实、debug、重复检索而读取记忆也会刷新 `last_active`、累加 `activation_count` 并触发时间涟漪。实测旧桶权重积到 51，新桶再也排不进浮现区。**检索是「我去找它」，强化是「找到之后，这条确实要紧」**——后者只有读完才判断得出来，绑在一起等于让读取行为自己给自己投票。)
 
 ### 2.2 对话启动序列（CLAUDE_PROMPT.md 规定的 Claude 端行为）
 
@@ -265,18 +270,19 @@ feel 桶自身：
 
 ---
 
-## 3. MCP 工具规格（共 16 个）
+## 3. MCP 工具规格（16 个基础工具；另有 2 个可选工具）
 
-> **单连接器（iter 2.2）**：当前 16 个工具统一由连接器 `/mcp` 暴露。
-> 历史上（iter 2.1）曾拆成两个 FastMCP 实例。2.8.5 起删除历史容器，当前 16 个工具全部直接注册到唯一 `mcp`。
+> **单连接器（3.4.0 起）**：16 个工具全在 `/mcp` 上，可选的 `You` 与 `Them` 各按自己的独立开关在其上动态注册/移除（只开一个 17，两个都开 18）。
+> 信件 3.2.0 曾拆到 `/mcp-extra`，3.4.0 并回主链路，该端点再次退役返回 404。
 > - 高频 7 个 —— `breath` / `breath_search` / `breath_advanced` / `hold` / `grow` / `trace` / `dream`
-> - 低频 9 个 —— `feel` / `anchor` / `release` / `pulse` / `plan` / `letter_write` / `letter_lock_update` / `letter_read` / `I`
+> - 低频 6 个 —— `feel` / `anchor` / `release` / `pulse` / `plan` / `I`
+> - 信件 3 个 —— `letter_write` / `letter_lock_update` / `letter_read`
 >
 > 3.0.0 删除了 source 回顾 4 个与 relation 4 个工具，见 §3.3.1。
 
 ### 3.1 `breath` / `breath_search` / `breath_advanced` — 检索/浮现
 
-三个入口共用同一个内部实现 `tools/breath/dispatch()`，只是 MCP 层暴露的参数面不同（见 issue #17：claude.ai 按需加载工具时会跳过参数复杂的工具，单个 9 参数的 `breath` 会导致它常年加载不上，拆薄之后 `breath()` 能保证每次对话稳定自动加载）：
+三个入口共用同一个内部实现 `src/tools/breath/dispatch()`，只是 MCP 层暴露的参数面不同（见 issue #17：claude.ai 按需加载工具时会跳过参数复杂的工具，单个 9 参数的 `breath` 会导致它常年加载不上，拆薄之后 `breath()` 能保证每次对话稳定自动加载）：
 
 - **`breath()`** — 0 参数。等价于 `dispatch()` 全默认，即下面的「浮现模式」。日常每次对话开头调用。
 - **`breath_search(query, domain="", max_results=0)`** — 3 参数。等价于 `dispatch(query=query, domain=domain, max_results=max_results)`，即下面的「检索模式」。按关键词/语义找记忆时用。
@@ -295,8 +301,8 @@ feel 桶自身：
 2. **Plan 通道**（`domain="plan"`，仅 `breath_advanced`，3.0.0 新增）：直接拉所有 `type==plan && status==active` 桶，按 `created` 倒序逐字返回，放不下的整条省略、不截断不摘要；一条 active plan 都没有时返回「没有计划。」。
    > **为什么必须有这个通道**：plan 桶被浮现模式排除，而 `domain` 参数只在 catalog 模式和检索模式（模式 5，需要 `query`）里生效。没有这一分流时，`breath_advanced(domain="plan")` 会落到模式 4 浮现模式，返回权重最高的桶 + 置顶核心准则——**调用方拿到的是核心准则，不是 plan**。叠加 dream 末尾 plan 段可能因总预算降级成只报条数，plan 正文一度没有任何读取入口。回归测试见 `tests/test_breath_plan_channel.py`。
 3. **重要度批量模式**（`importance_min >= 1`，仅 `breath_advanced`）：跳过语义搜索，按 importance 降序返回 ≤20 条；过滤 `feel/plan/letter` 与 `dont_surface=True`；**不过滤 anchor、不过滤 pinned**（设计：主动按 importance 检索时希望能找到所有重要桶）。
-4. **浮现模式**（无 `query`；`breath()` 固定走这里）：pinned/显式 permanent 桶展示为「核心准则」+ 未解决桶按衰减分排序，**冷启动**（`activation_count==0 && importance>=8`）的桶最多 2 个插到最前；后续排序**有两条互斥路径**：当 `surfacing.sampling.enabled=true` 时走加权无放回采样（`top_k` / `sample_k` / `temperature` 控制；详见 §7.1），否则走原 Top-1 固定 + Top-2~20 随机洗牌；按 `max_results` 硬截断。**排除 anchor 与 protected 桶**：anchor 是坐标系；protected 只防衰减，不进入核心准则、未解决、久未浮现或偶遇池。浮现**不调用** `touch()`。每条返回正文后附一行紧凑 `👣 Footprint`，只表达创建、补充、淡去、归档、恢复等有意义的变迁，不展示 touch/索引噪声。**末尾追加 `=== 久未浮现 ===` 段**：从久未激活的高重要度桶里随机抽 1～2 条，模拟「突然想起来」。
-5. **检索模式**（有 `query`；`breath_search()` 固定走这里）：每个 query 只生成一次查询向量，与 rapidfuzz/BM25 多维评分共同进入 `BucketManager.search()` → 过滤 `feel/plan/letter`，**pinned/permanent/protected 仍可被显式检索命中**：pinned/permanent 加 `📌 [核心准则]`，protected 加 `🛡️ [受保护记忆]` → 纯语义候选相似度 `>=0.65` 标 `[语义关联]`，且不能绕过 domain/tags/type 过滤 → 活跃桶命中时 `touch()`。查询也会检索 archive；归档命中返回保留的 Markdown 原文与 Footprint，明确邀请模型判断是否值得再次回忆，并显示 `trace(bucket_id="...", restore=True)`。查询只发现、不自动恢复，也不 touch 归档桶。结果不足时保留设计上的自由联想，但 protected 不进入这一非命中随机通道。embedding 不可用时明确提示后继续关键词/BM25；桶一旦命中，返回层直接使用当前存储的完整 `content`，不调用 dehydrate、不剥除 wikilink、不截断或改写。**不过滤 anchor**（设计：主动检索时希望能找到坐标系桶）。catalog 同样保留 protected 并使用相同的受保护标记。
+4. **浮现模式**（无 `query`；`breath()` 固定走这里）：pinned/显式 permanent 桶展示为「核心准则」+ 未解决桶按衰减分排序，**冷启动**（`activation_count==0 && importance>=8`）的桶最多 2 个插到最前；后续排序**有两条互斥路径**：当 `surfacing.sampling.enabled=true` 时走加权无放回采样（`top_k` / `sample_k` / `temperature` 控制；详见 §7.1），否则走原 Top-1 固定 + Top-2~20 随机洗牌；**再按 `surfacing.recent_slots`（默认 3）给近 7 天创建的桶补足预留位置**（3.6.0，见下）；按 `max_results` 硬截断。**排除 anchor 与 protected 桶**：anchor 是坐标系；protected 只防衰减，不进入核心准则、未解决、久未浮现或偶遇池。浮现**不调用** `touch()`。每条返回正文后附一行紧凑 `👣 Footprint`，只表达创建、补充、淡去、归档、恢复等有意义的变迁，不展示 touch/索引噪声。**末尾追加 `=== 久未浮现 ===` 段**：从久未激活的高重要度桶里随机抽 1～2 条，模拟「突然想起来」；3.6.0 起 **24 小时内新建的桶不进这个池**——`activation_count==0` 既可能是「很久没被想起」也可能是「还没来得及被想起」，判据本身分不出来，得靠年龄。3.6.0 起本模式也接 `date_from`/`date_to`（核心准则不受时间过滤影响：它们是准则，不是那段时间里发生的事）。
+5. **检索模式**（有 `query`；`breath_search()` 固定走这里）：每个 query 只生成一次查询向量，与 rapidfuzz/BM25 多维评分共同进入 `BucketManager.search()` → 过滤 `feel/plan/letter`，**pinned/permanent/protected 仍可被显式检索命中**：pinned/permanent 加 `📌 [核心准则]`，protected 加 `🛡️ [受保护记忆]` → 纯语义候选相似度 `>=0.65` 标 `[语义关联]`，且不能绕过 domain/tags/type 过滤 → **命中不 `touch()`**（3.6.0：检索与强化解耦，见 §2.1 数据流约束）。查询也会检索 archive；归档命中返回保留的 Markdown 原文与 Footprint，明确邀请模型判断是否值得再次回忆，并显示 `trace(bucket_id="...", restore=True)`。查询只发现、不自动恢复，也不 touch 归档桶。结果不足时保留设计上的自由联想，但 protected 不进入这一非命中随机通道。embedding 不可用时明确提示后继续关键词/BM25；桶一旦命中，返回层直接使用当前存储的完整 `content`，不调用 dehydrate、不剥除 wikilink、不截断或改写。**不过滤 anchor**（设计：主动检索时希望能找到坐标系桶）。catalog 同样保留 protected 并使用相同的受保护标记。
 
 #### 检索的门：召回与排序目前没有分开（已知设计债）
 
@@ -394,7 +400,7 @@ if text_match or semantic_match: 入选
 桶间一跳关系不再由模型建立或管理。
 
 **读取侧不受影响**：`ombrebrain/storage/relation_store.py` 的 `relation_hint()` 仍在三处被后端消费——
-`tools/breath/_verbatim.py`、`tools/breath/catalog.py`、`tools/dream/output.py`。
+`src/tools/breath/_verbatim.py`、`src/tools/breath/catalog.py`、`src/tools/dream/output.py`。
 存量关系照常出现在浮现、目录与 dream 输出里。
 
 **写入侧当前是空的**：删掉 `relation_attach` 之后没有任何入口能建立新关系，
@@ -403,7 +409,7 @@ if text_match or semantic_match: 入选
 
 ### 3.4 `trace` — 修改/删除
 
-签名：`trace(bucket_id, name="", domain="", valence=-1, arousal=-1, importance=-1, tags="", resolved=-1, pinned=-1, protected=-1, digested=-1, content="", delete=False, status="", weight=-1, dont_surface=-1, why_remembered="", meaning_append="", meaning_replace=None, media_append=None, media_replace=None, hard_delete=False, delete_reason="", restore=False, old_str="", new_str=None)`
+签名：`trace(bucket_id, name="", domain="", valence=-1, arousal=-1, importance=-1, tags="", resolved=-1, pinned=-1, protected=-1, digested=-1, content="", delete=False, status="", weight=-1, dont_surface=-1, why_remembered="", meaning_append="", meaning_replace=None, media_append=None, media_replace=None, hard_delete=False, delete_reason="", restore=False, old_str="", new_str=None, unlink="", relink="", relation_type="")`
 
 - `delete=True` → `bucket_mgr.delete()`：写入 `deleted_at` 并将 Markdown 移入 `archive/`；只清理可重建的 embedding 索引，不抹除记忆文件。
 - `hard_delete=True` → 仅当桶在创建时带有 `provenance.kind=test` 与 `erasable=true` 才物理删除；真实记忆、后补字段及普通 Dashboard 路径均不得越过此边界。Dashboard 普通模式支持多选/当前筛选全选的沉底、主动遗忘和归档，开发者模式才显示测试桶永久删除入口。
@@ -427,6 +433,20 @@ if text_match or semantic_match: 入选
 - `meaning_append` 日常追加一条 meaning；`meaning_replace` 仅在纠错时整体替换。`media_append` / `media_replace` 同理管理持久媒体引用。
 - `hard_delete=True` 必须同时提供非空且不超过 500 字符的 `delete_reason`，不能与 `delete=True` 同时使用，且只接受创建时已标记为可擦除测试数据的桶；普通记忆与 plan 始终拒绝物理删除，拒绝时不会顺带归档。
 - **不暴露 `anchor` 字段**：anchor 切换必须走 `anchor()` / `release()` 工具（受 24 上限保护）。
+- `unlink` / `relink` + `relation_type` 修正后端自动建错的桶间关系（3.3.0）。两者互斥，且与其他字段更新互斥（走独立早返回分支，不参与 updates 收集）。
+  - `unlink="目标id"`：**双向物理移除**这一对关系，两侧各删一条。不是标成 `status="detached"`——3.0.0 删掉了 `relation_restore`，detached 会变成再也回不来的僵尸状态还白占 `MAX_RELATION_LINKS` 名额。删掉不会被重建：`link_new_bucket` 只在**新建桶**时触发推断，那一对桶不会再出生第二次。
+  - `relink="目标id", relation_type="related_to"`：改已存在关系的类型，对侧自动写入 `reverse_relation_type`（A `continuation_of` B ⇒ B `continues` A）。改过的关系**降级为手动关系**（去掉 `auto` / `score`），此后受 `merge_auto_links` 保护，不再被自动推断按相似度挤掉。
+  - **`relink` 不能凭空建立关系**：两侧都没有这条关系时明确拒绝。这是它与 3.0.0 删掉的 `relation_attach` 之间唯一的区别——「建立」仍然只归后端，理由见 `tools/_relation_link.py` 开头。
+  - 不支持 `custom`：custom 关系必须带 label，而 trace 没有传 label 的入口。单向残留（一侧有、另一侧没有）两种操作都能处理。
+- `quotes_replace` 订正/删除写入那一刻留下的引语（3.4.0，实现见 `tools/trace/_quote_edit.py`）。与其他字段更新、以及 `unlink`/`relink` 都互斥，走独立早返回分支；冲突时显式报错而不是静默丢掉另外半个意图。
+  - 整体替换语义：传 `[]` 删除全部（连 frontmatter 字段一起 pop，不留空列表）；只删其中一句就把要保留的原样传回来。格式同 `hold(quotes=...)`。
+  - **只能改和删，不能补录**：桶里本来没有引语时拒绝，条数只能持平或减少。引语与已删除的原文层的全部区别就在「谁决定记住」——原文层系统自动存全量、事后随时可查，引语是写入那一刻挑的（见 `ombrebrain/storage/quote_store.py` 模块 docstring）。能补录的话，任何一句话都可以被事后追认为「当时就知道重要」，这个通道当场退化成存原文。与 `relink 不能凭空建立关系` 同源。
+  - 条数/长度硬上限（3 条 / 每条 100 字，**超限拒绝不截断**）由 `BucketManager._sanitize_quotes` → `normalize_quotes` 统一把关，`_quote_edit` 不重复校验。
+  - 成功后回显的是**读回磁盘的结果**而不是入参：入参可能是裸字符串列表，落盘的是归一化并清洗过的结构；回显入参会让「改成了什么」看不出来。
+- `reinforce=True` 是 3.6.0 起**唯一**的强化入口（实现见 `tools/trace/_reinforce.py`）。调 `bucket_mgr.touch(bucket_id, ripple=True)`：刷新 `last_active`、`activation_count += 1`、触发时间涟漪。与其他字段更新、`unlink`/`relink`、`quotes_replace` 全部互斥，走独立早返回分支。
+  - **为什么要有它**：3.6.0 把 `breath_search` 改成完全只读（见 §2.1）。少了这个入口，解耦就不是解耦，是把强化删了。
+  - **为什么是按桶而不是按批**：检索命中里绝大多数只是路过。「这条要紧」是读完之后对**某一条**的判断，不是对候选集的判断。
+  - `ripple=True`（而不是当年批量 touch 用的 `False`）：显式强化是一次真实的想起，让时间相邻的记忆轻微唤醒正是时间涟漪的设计意图；当年关掉涟漪是批量场景的性能妥协，一次一条不再需要。
 
 (返回时会按 `resolved`/`digested` 状态变化追加人话提示。`digested=True` 会从无参 breath、被动联想和 dream 候选中硬过滤，不依赖 importance/衰减分数；显式 query 真命中以及 importance/catalog 审计入口仍可找回。)
 
@@ -504,19 +524,110 @@ Dashboard 的既有 `/api/letter/{letter_id}` PATCH 同时承载两类互斥请�
 
 签名：`I(content="", aspect="", read=False, limit=20, promote="")`
 
-实现在 `tools/i/`（`dispatch = i_core`）。语义：「我写下关于我自己的认识」——不是「时间里发生的事」，而是模型对自身本质/规律/变化的观察。**`I` 是沉淀物不是日记**：想法先当普通记忆活着，经 dream 反复碰撞后才可能升级进 `I`（哲学边界见 `rule.md` 第 13.1 条）。
+实现在 `src/tools/i/`（`dispatch = i_core`）。语义：「我写下关于我自己的认识」——不是「时间里发生的事」，而是模型对自身本质/规律/变化的观察。**`I` 是沉淀物不是日记**：想法先当普通记忆活着，经 dream 反复碰撞后才可能升级进 `I`（哲学边界见 `rule.md` 第 13.1 条）。
 
 - `content` 非空 → **写候选**。创建一条普通 `dynamic` 桶，tag `__i_candidate__`（刻意不是 `__i__`）、`i_stage="candidate"`、`i_dream_dates=[]`。候选照常浮现和衰减；在 dream 的普通近期记忆段仍受 `window_hours` 限制，但待沉淀候选段不受该时间窗限制，避免旧候选永久失去三次跨日见证的机会。`aspect` 可选维度：`nature`(本质) / `values`(看重的) / `patterns`(规律) / `limits`(局限) / `becoming`(在变成什么) / `uncertainty`(不确定的) / `stance`(立场)。
 - `content` 空 或 `read=True` → **读取模式**，返回正式条目（按 `limit` 截断，默认 20 条）＋ 待沉淀候选清单；没有 `i_from_candidate` 的历史条目标注为「早期直接写入，未经沉淀」。
 - `promote="桶ID"` → **升级**。要求该候选的 `i_dream_dates` 已有 ≥ `I_PROMOTE_THRESHOLD`（3）个不同日期，否则拒绝并报告还差几次。通过后创建 `type="i"` 桶（`dont_surface=True`、`i_from_candidate`、继承 `i_dream_dates`），候选桶保留原文并改标 `i_stage="promoted"` / `i_promoted_to` / `resolved=True`。同时传 `content` 可用提炼后的措辞落成正式条目。
 - 正式 I 条目带 `dont_surface=True`：**不参与普通 `breath` / `dream`**；只在 `SessionStart` 时自动附带最近 3 条。
 
-dream 侧配合（`tools/dream/hints.py` + `output.py`）：
+dream 侧配合（`src/tools/dream/hints.py` + `output.py`）：
 
 - `collect_self_candidates(all_buckets, window_hours)` 收集全部待沉淀候选，不受普通记忆的 `window_hours` 限制；候选按创建时间从旧到新排列，并继续受最终输出 token 预算约束。用**已落盘向量**（不发新请求）为每条取相似度 ≥ 0.35 的前 3 条对照材料；对照池 = 全部正式 I 条目 + 全部其它候选 + 最近 200 条普通桶（排除 `letter`）。向量不可用时只列候选并明说。
 - 专用候选段排在 dream 其它上下文之后，受 `surfacing.dream_max_tokens` 预算约束；候选本身也可能作为普通近期记忆，或作为另一条候选的碰撞材料出现。
 - 见证计数由 `dream/__init__.py` 在最终输出渲染完成后调 `tools.i.record_dream_pass()` 写入，按不同日期去重。只要待沉淀候选的结构化记忆块实际出现在本次输出（近期记忆、候选主块或碰撞材料），就算一次见证；所有位置都因预算未展开时才不计次。
 - 碰撞只摆材料，**不做矛盾/重复判定**（认知层边界，`rule.md` 第 5 条）。
+
+### 3.12 `You` — 默认隐藏的「我对你的认识」
+
+签名：`You(query="", aspect="", content="", bucket_ids=None, concept_key="",
+concept_value="", basis="observed_pattern", explicit=False, long_term=False,
+delete_id="", max_results=6)`，实现位于 `src/tools/you/core.py:14` 与 `ombrebrain/you/`。
+无参或带 `query` 是读回；带 `content` 是写入或重申；带 `delete_id` 是撤回。
+
+> **3.4.x 变更**：这一节此前描述的是「LLM 抽取候选 → LLM 复核 → 读回前再由第三次 LLM
+> 磨成语义零件」的三层结构，`You` 也只是个只读工具。三层 LLM 已经**整个删除**，
+> `You` 变成可读回、可写入、可撤回。写入路径**不得调用任何 LLM**，测试以一个
+> 「任何调用都抛断言」的假 dehydrator 锁死这条。
+
+它不是固定第 17 个工具：默认关闭时完全不注册，只有 Dashboard 的独立开关开启后，
+`YouToolGate` 才在当前 FastMCP 实例中添加这一项；关闭时先移除工具再持久化关闭。
+工具处理函数每次仍重新读取权威状态，因此缓存旧清单的客户端直调只能得到未知工具错误。
+
+`You` 不复用 `mcp_require_auth`，也不改变其他工具 manifest、SessionStart、`breath` 或 hook。
+读回时选择同一 owner/role/user 作用域内 `formal + clear + current + callable` 的 Claim，
+**直接返回模型自己写下的正文**——不再过一层抽象。原文复制检查仍在，但移到了**写入**那一侧：
+正文与记忆桶原文归一化后连续重合即拒（`leaks_protected_text`），防的是把桶里的话照抄成
+一条「认识」。前端除总开关外没有 Claim、证据、画像、历史、计数或审核入口。
+
+持久化位于 `<buckets_dir>/.you/you.sqlite3`，开关、Claim 与 Projection 同库。
+库里那张 `outbox` 表是**自动派生时代的遗留**，3.4.x 拆掉观察者之后已经没有任何消费者
+（`ombrebrain/you/store.py:47-50`、`:81`），旧快照里的残留内容也不再校验。
+依据失效改由**读时校验**承担，见 §3.13 的"闸二"。
+允许类别和证据门槛见 `docs/YOU_MODULE_SPEC.md` 与 ADR-0004。
+默认的 `docs/CLAUDE_PROMPT.md` 只描述 16 个基础工具，不预告关闭态的 `You` 与 `Them`；开启后的发现以
+MCP `tools/list` / tool search 为准，确保关闭时模型侧也不可见。
+
+### 3.13 `Them` — 默认隐藏的「我对其他人的认识」（3.5.0）
+
+签名：`Them(query="", content="", names=None, person_id="", bucket_ids=None,
+aspect="", concept_key="", concept_value="", basis="observed_pattern",
+delete_id="", max_results=12)`，实现位于 `src/tools/them/core.py:15` 与 `ombrebrain/them/`。
+形态照 `You`：默认关闭、由模型自己写、不经 LLM 转述、同一套禁止清单
+（`ombrebrain/them/safety.py` 直接复用 `you.safety`，不抄第二份）。
+开关走 `ThemToolGate`，关掉时工具**完全消失**而不是留在清单里返回「已关闭」——
+留着的话，模块开没开就成了模型能看见的信息。
+
+持久化在 `<buckets_dir>/.them/them.sqlite3`（`ombrebrain/them/store.py:159`），与 you 分库。
+
+**两道结构性闸**（`ombrebrain/them/service.py:68-69`）：
+
+- **闸一 — 依据**：`MIN_SUPPORTING_BUCKETS = 2`，至少两个真实记忆桶，
+  **且每个桶的正文里都要出现这个人的称呼**（`_build_edges`）。只用代词承接的桶会被拒——
+  一条依据自己都指不明白是谁，就不该拿来撑一条关于谁的判断。
+- **闸二 — 时间**：`REQUIRED_CONFIRMATIONS = 3`，要在**三个不同自然日**重申过才落库。
+  改动已生效的条目同样要重新攒三天。撤回不需要确认：立一条要时间来验，
+  收回一个判断不该比立一个更难。
+
+**依据失效是读时校验，不是事件通知。** `_drop_unsupported` 在每次读回时调
+`partition_by_live_evidence`（`ombrebrain/you/service.py:70`，与 you 共用），
+现场把撑不住的条目置为 `expired`。走这条路是因为桶变动观察者在 3.4.x 被拆掉后一直没有替代，
+`remove_bucket_evidence` 事实上成了只有测试在调的死代码。
+**只认删除，不认归档**：归档只改变可见性（rule.md 第 9 条、`YOU_MODULE_SPEC` §9.3），
+而自动衰减归档是常态——让它触发失效，等于一条立住的认识会被时间清空。
+
+**两类人，分界是「模型怎么认识这个人的」**，不是谁登记的（`models.py` 的
+`ORIGIN_MODEL` / `ORIGIN_HUMAN`）：
+
+- `met_myself` —— 模型自己遇到的，第一手。人类只看得见称呼。
+- `heard_from_user` —— 人类登记、模型没见过的，关于他的一切都是转述。
+  这一份的正文对人类可见，且可以留言纠错——纠错要有对象，看不见就只能瞎猜。
+
+**撞名不自动合并**：`_resolve_person` 命中 `human_visible` 的同名人时抛错并给出 `person_id`，
+由模型自己判断是不是同一个人。按字符串并成一份就是张冠李戴，而且并完之后模型第一手的
+印象还会被标成「你说过的话」。同为模型自己遇到的两个同名人照常并称呼——那一档没有混淆风险。
+
+**读回是一条 JSON**（`_render`），每个人带 `known_via`（`met_myself` / `heard_from_user`）
+与 `notes`，外加 `attribution_note` / `known_via_note`。用 JSON 而不是散文，是因为这些话说的
+全是**别人**：混在自然语言里返回，容易幻觉的模型会把「Zoey 说话很直接」重述成用户的属性。
+
+**只记这个人本身，不描述任何关系**（`safety.describes_relationship`）。主判据是**人称**
+（`safety.py:58`）：一句只讲这个人的话不需要提到「我」，一旦出现第一人称，主语就不再只是他了。
+句式表（`_RELATIONSHIP_PATTERNS`）留着，管的是不含人称的那一类（「A 和 B 之间有点僵」）。
+先前只有句式表时，真机六句漏掉四句。
+
+**独立通道**：`surface()` 只在 breath / dream 的浮现结果**之后**追加，不进融合打分。
+关掉 them，两者输出必须与没有这个模块时逐字一致——这是这条边界唯一可被检验的形式。
+无 query 时按衰减权重取前三（`MAX_SURFACED_PERSONS = 3`），有 query 时姓名命中不受名额限制。
+衰减复用 `decay_engine.calculate_score()`，只喂 `activation_count` + `last_active`，不另立曲线。
+
+**配额**：每人 `DEFAULT_MAX_TOKENS_PER_PERSON = 1500`（前端 200–4000 可调，写进
+`config.yaml` 的 `them.max_tokens_per_person`）。写满时系统**只挡不代压**：把这个人的条目
+按 aspect 分层摆给模型，由它自己决定合并哪几条。候选不占配额，上限 `MAX_CANDIDATES_PER_PERSON = 12`。
+
+**人类那一侧**只改得动称呼、只能留言纠错（`src/web/them.py`）。改称呼与留言都**不算**
+「这个人被提起了一次」——那会凭空抬高衰减权重；留言也**不占配额**，配额管的是模型自己
+沉淀了多少。两者都在下次浮现的尾部交给模型一次，读完就清。
 
 ---
 
@@ -544,6 +655,7 @@ dream 侧配合（`tools/dream/hints.py` + `output.py`）：
 | `/api/bucket/{id}/forget` | POST | 🔒 | iter 1.8：切换 `dont_surface`。桶仍在磁盘，只是不再被无参 `breath()` 主动浮现，关键词搜索仍可达 |
 | `/api/buckets/forget` | POST | 🔒 | iter 1.9：批量设置 `dont_surface`。Body `{ids:[...], dont_surface: bool}`。返回 `{ok, updated:[], missing:[], errors:[]}` |
 | `/api/settings/sampling` | GET / POST | 🔒 | iter 1.9：dashboard 的加权采样面板。GET 返回当前 `surfacing.sampling.{enabled,top_k,sample_k,temperature}`；POST 校验范围后热更新到内存 config（不写回 yaml） |
+| `/api/settings/you` | GET / POST | 🔒 | 读取或切换唯一 `You` 总开关；POST 只接受 `{enabled, state_revision}`，成功时同步增减单个 MCP 工具，不暴露任何内部条目 |
 | `/api/anchors` | GET | 🔒 | iter 2.0：列出所有 anchor 桶（按 `created` 升序），返回 `{ok, count, limit, anchors:[...]}` |
 | `/api/bucket/{id}/anchor` | POST | 🔒 | iter 2.0：toggle anchor 标记。Body 可传 `{value: bool}` 强制设置；不传则切换。已满 24 时返回 **409** + `{error, count, limit}` |
 | `/api/bucket/{id}` | DELETE | 🔒 | 删除到档案：移入 `archive/` 并写 `deleted_at`，需 `?confirm=true`；不做物理抹除 |
@@ -571,7 +683,7 @@ dream 侧配合（`tools/dream/hints.py` + `output.py`）：
 | `/api/import/results` | GET | 🔒 | 仅返回已导入桶，支持 `limit`/`offset` 分页（含正文 300 字预览） |
 | `/api/import/review` | POST | 🔒 | 批量审阅（important / pin / noise / delete） |
 | `/api/bucket/{id}/edit` | PATCH/POST | 🔒 | iter 1.6 §6：Dashboard 编辑桶元数据（name/tags/domain/importance/resolved/pinned/digested/content）；走 §5 大小+pinned 配额 |
-| `/api/export` | GET | 🔒 | 返回可验证 zip：`buckets/*.md` + `sources/src_<sha256>.source` + SQLite 一致性快照 + export_meta.json + backup_manifest.json；**不包含 config / 密钥**；任何记忆或证据源文件读取失败则整个导出失败，不产生“看似成功”的残缺包 |
+| `/api/export` | GET | 🔒 | 返回可验证 zip：`buckets/*.md` + `sources/src_<sha256>.source` + `embeddings.db` + 可选 `you/you.sqlite3` 一致性快照 + export_meta.json + backup_manifest.json；**不包含 config / 密钥**；任何记忆、证据或快照读取/校验失败则整个导出失败，不产生“看似成功”的残缺包 |
 | `/api/migrate/upload` | POST | 🔒 | 上传 zip 包，先做 ZIP 安全边界与清单 SHA-256 校验，再解析内容、识别 ID 冲突、检查 embedding 模型/维度；返回冲突和 `integrity_verified`，不实际写入 |
 | `/api/migrate/status` | GET | 🔒 | 查询当前迁移任务状态（phase / 冲突列表 / 导入进度 / 重新向量化进度） |
 | `/api/migrate/apply` | POST | 🔒 | 执行导入；请求必须回传本次 upload 返回的 `job_id`，并携带冲突决策 `{bucket_id: "skip"|"overwrite"|"keep_both"}`。过期/缺失 job ID 返回 409；异步执行，轮询 status 看进度 |
@@ -591,8 +703,8 @@ dream 侧配合（`tools/dream/hints.py` + `output.py`）：
 | `/api/env-vars` | GET | 🔒 | dashboard 设置页「⑤ 环境变量」只读区：当前进程读到的所有 `OMBRE_*`，敏感字段脱敏 |
 | `/api/env-config` | GET | 🔒 | 可写 6 字段的当前值（脱敏） |
 | `/api/env-config` | POST | 🔒 | 热更新 6 字段并写回 `.env`（重启仍有效） |
-| `/mcp/*` | — | 公开 | FastMCP 主连接器：13 个记忆动作 —— breath / breath_search / breath_advanced / hold / grow / dream / feel / trace / anchor / release / pulse / plan / **I** |
-| `/mcp-extra` | — | 公开 | 第二个 FastMCP 实例：letter_write / letter_lock_update / letter_read。2.8.5 起退役返回 404，3.2.0 恢复。与 `/mcp` 共享同一套中间件（鉴权、体积限制、CSRF）——见 `web/request_limits.py` 的 `_MCP_ENDPOINT_PATHS` |
+| `/mcp/*` | — | 公开 | FastMCP 唯一连接器：16 个基础工具 —— breath / breath_search / breath_advanced / hold / grow / dream / feel / trace / anchor / release / pulse / plan / letter_write / letter_lock_update / letter_read / **I**；**You** 与 **Them** 各按自己的独立开关额外暴露（只开一个 17，两个都开 18） |
+| ~~`/mcp-extra`~~ | — | — | 已退役返回 404。2.8.5 退役 → 3.2.0 随信件恢复为第二个 FastMCP 实例 → 3.4.0 随信件并回主链路再次退役。端点集合见 `web/request_limits.py` 的 `_MCP_ENDPOINT_PATHS` |
 
 🔒 = 需要 cookie 认证，未认证返回 `JSON {error, setup_needed}` 状态码 401。
 
@@ -689,12 +801,12 @@ Dashboard `/api/search` 现在会在 `bucket_mgr.search()` 排序之后、JSON �
 
 ### 4.3.3C MCP Breath Search Surface Policy（vNext Phase 3C）
 
-MCP `breath(query=...)` 现在也会在显式查询命中进入 dehydration / touch 之前调用 `SurfacePolicyVM.evaluate_bucket(..., mode="search")`。这一步覆盖关键词搜索结果和语义向量补充结果，但不改变底层 `BucketManager.search()`。
+MCP `breath(query=...)` 现在也会在显式查询命中进入渲染之前调用 `SurfacePolicyVM.evaluate_bucket(..., mode="search")`。这一步覆盖关键词搜索结果和语义向量补充结果，但不改变底层 `BucketManager.search()`。
 
 边界：
 
 - `dont_surface=True` 在 `breath(query=...)` 里仍可达；主动遗忘只限制无参/被动浮现。
-- `archived`、`deleted_at`、`tombstone` 终态不会从 MCP 查询搜索返回，也不会被这条路径 `touch()`。
+- `archived`、`deleted_at`、`tombstone` 终态不会从 MCP 查询搜索返回。（3.6.0 起这条路径对**任何**桶都不再 `touch()`，终态桶的豁免因此不再是一条独立边界。）
 - `feel`、`plan`、`letter` 仍沿用 MCP 搜索入口原有排除规则，保持专用通道边界。
 - 查询结果不足时的随机 drift 仍是后续收敛项；本阶段只统一显式 query hit 的读取侧 policy。
 
@@ -892,7 +1004,7 @@ Phase 38 后，Dashboard `/api/system/diagnostics` 会追加 `migration_preserva
 
 工程名不能作为 public MCP tool 暴露：`remember`、`touch`、`resolve`、`suppress`、`surface`、`hippocampal_recall`、`offline_consolidate`、`update_memory_row` 等只允许作为 internal label。restricted/admin 工具（如 `verify_ledger`、`replay_ledger`、`rebuild_projection`、`admin_erasure_request`）必须显式标为 restricted 且要求 admin。
 
-这一步的边界是 diagnostic/manifest validation：它保证工具名设计不会滑回 database/API 语言，也不会让 `delete`、`dump_all`、`set_emotion`、`decide`、`update_user_profile`、`force_personality` 这类破坏 OB 哲学边界的名字进入普通工具清单。Dashboard `/api/system/diagnostics` 的 `public_tool_manifest` 检查会解析 `src/server.py` 中的 `@mcp.tool()` / `@mcp_extra.tool()` 装饰器，把公开工具名交给该 contract 校验；它不导入 `server.py`，避免启动副作用。
+这一步的边界是 diagnostic/manifest validation：它保证工具名设计不会滑回 database/API 语言，也不会让 `delete`、`dump_all`、`set_emotion`、`decide`、`update_user_profile`、`force_personality` 这类破坏 OB 哲学边界的名字进入普通工具清单。Dashboard `/api/system/diagnostics` 的 `public_tool_manifest` 检查会解析 `src/server.py` 中的 `@mcp.tool()` 装饰器，把公开工具名交给该 contract 校验；它不导入 `server.py`，避免启动副作用。
 
 ### 4.3.10.7 Code Standards Contract（vNext Phase 17，diagnostic）
 
@@ -1119,7 +1231,7 @@ Phase 42 后，Dashboard `/api/system/diagnostics` 会追加 `vnext_coverage` �
 
 ### 4.3.10.21 Public Tool Manifest Diagnostics（Phase 32）
 
-`web.system.build_system_diagnostics()` 现在会追加 `public_tool_manifest` check。它通过 AST 解析 `src/server.py`，收集 `@mcp.tool()` 和 `@mcp_extra.tool()` 装饰的公开 MCP 工具函数名，然后用 `PublicToolDesignContract.evaluate_manifest()` 校验这些名字仍然符合器官语言边界。
+`web.system.build_system_diagnostics()` 现在会追加 `public_tool_manifest` check。它通过 AST 解析 `src/server.py`，收集 `@mcp.tool()` 装饰的公开 MCP 工具函数名，然后用 `PublicToolDesignContract.evaluate_manifest()` 校验这些名字仍然符合器官语言边界。
 
 这一步刻意不 import `server.py`，因为 server 模块带有 FastMCP 实例和启动副作用；源码审计足以覆盖当前公开注册点。如果后续 FastMCP 注册方式迁移到独立 manifest，可以把这个 diagnostics check 的输入从 AST 换成真实 manifest，但仍应先经过 `PublicToolDesignContract` 再显示或发布。
 
@@ -1306,13 +1418,13 @@ Phase 46 后，`LegacyRuntime` 会暴露 `tool_output_receipt(...)` / `evaluate_
 
 `SurfacePolicyVM` 的拒绝会强制把 `accessibility` 归零，所以高语义相似度、高 lexical 命中或高 graph 分都不能绕过 `dont_surface`、archive、tombstone、deleted 等 surface policy。`rank()` 也按最终 `surface_score` 排序，而不是按 raw candidate score 排序。
 
-Phase 9 仍是 shadow scoring contract：它没有替换 `tools/breath/search.py`、`tools/breath/surface.py` 或 Dashboard `/api/search` 的实际排序逻辑。后续接 live retrieval 时，应先把现有 decay/search/vector 分数映射到 `RetrievalFeatures`，再逐步打开 ranking，而不是直接重排所有用户可见结果。
+Phase 9 仍是 shadow scoring contract：它没有替换 `src/tools/breath/search.py`、`src/tools/breath/surface.py` 或 Dashboard `/api/search` 的实际排序逻辑。后续接 live retrieval 时，应先把现有 decay/search/vector 分数映射到 `RetrievalFeatures`，再逐步打开 ranking，而不是直接重排所有用户可见结果。
 
 Phase 47 后，`LegacyRuntime` 会暴露 `score_retrieval_bucket(...)` / `rank_retrieval_candidates(...)`，并持有同一个 `PolicyGatedRetrievalScorer`。`VNextPreflightReportBuilder.retrieval_scoring` 复用 runtime scorer，证明 retrieval policy gate、surface score 与排名 contract 已经有 runtime 入口。真实 `breath` / search 仍需单独迁移 feature 映射与排序开关。
 
 ### 4.4 Dashboard 页面（侘寂风）
 
-调色板：米白 `#FAF8F3` / 墨黑 `#2C2A26` / 淡灰线 `#D9D5CB` / 朱砂 `#B85C3C`；字体 Noto Serif SC；border-radius 收敛到 2px。Tab 包括：记忆桶列表、Breath 模拟、记忆网络、Plan 看板（iter 1.7）、Anchor 面板（iter 2.0）、配置、导入、设置、Letters 入口。
+调色板：米白 `#FAF8F3` / 墨黑 `#2C2A26` / 淡灰线 `#D9D5CB` / 朱砂 `#B85C3C`；字体 Noto Serif SC；border-radius 收敛到 2px。Tab 包括：记忆桶列表、Breath 模拟、记忆网络、Plan 看板（iter 1.7）、Anchor 面板（iter 2.0）、配置、导入、设置、Letters 入口。设置页只用一个二元 switch 暴露 `You`；不得添加认识、画像、证据、候选、历史或审核 UI。
 
 ### 4.5 iter 1.8 — 桶 frontmatter 新增字段
 
@@ -1520,6 +1632,7 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 | `surfacing.feel_max_tokens` | `15000` | **dream** feel 历史段的 token 预算，超出折叠为 60 字摘要。3.0.0 起不再作用于 feel 通道——`feel(query=...)` 用自己的 `max_tokens`（默认 10000），且放不下时整条省略、不折叠 |
 | `timezone` | `Asia/Shanghai` | 3.0.0：用户只给日期、不写时区时按它理解（Letter 定时锁 `unlock_date` 等）。IANA 时区名；名字非法或缺 tzdata 时回退固定 `+08:00`，但 Dashboard 保存会当场校验拒绝。Dashboard「设置」可改，热更新生效 |
 | `ai_name` | （空） | 3.0.0：AI 一方的显示名。优先级高于环境变量 `AI_NAME`；随 vault 持久化，容器重建不丢。留空=未配置，回退环境变量再回退 `"AI"` |
+| `surfacing.recent_slots` | `3` | 3.6.0：浮现区预留给近 7 天创建桶的位置数，按 `created` 倒序，其余位置照旧按权重。配额按**缺口**补（权重排序自己送进来几条新桶就少补几条），且不超过 `max_results` 的一半。设 `0` 关闭，回到 3.5.0 的纯权重排序 |
 | `surfacing.sampling.enabled` | `false` | 浮现模式加权采样总开关；false 走原 Top-1 + shuffle |
 | `surfacing.sampling.top_k` | `5` | 候选池大小（按衰减分取前 k） |
 | `surfacing.sampling.sample_k` | `2` | 从池里无放回抽 k 条返回 |
@@ -1650,15 +1763,15 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 
 | ID | 严重度 | 文件 | 函数 | 一句话 | 测试 |
 |---|---|---|---|---|---|
-| B-01 | 🔴 高 | `bucket_manager.py` | `update()` | resolved 桶不再立即移入 archive/，由 decay 自然衰减 | `tests/regression/test_issue_B01.py` |
-| B-03 | 🔴 高 | `decay_engine.py` | `calculate_score()` | activation_count 用 float 不被 int() 截断浮点涟漪增量 | `tests/regression/test_issue_B03.py` |
-| B-04 | 🟠 中 | `bucket_manager.py` | `create()` | 初始 activation_count=0 而非 1，冷启动检测才能生效 | `tests/regression/test_issue_B04.py` |
-| B-05 | 🟠 中 | `bucket_manager.py` | `_calc_time_score()` | 时间衰减系数 0.02 而非 0.1（旧值衰减过快） | `tests/regression/test_issue_B05.py` |
-| B-06 | 🟠 中 | `bucket_manager.py` | 评分权重 | `w_time` 默认 1.5（原 2.5 过偏近期） | `tests/regression/test_issue_B06.py` |
-| B-07 | 🟠 中 | `bucket_manager.py` | `_calc_topic_score()` | `content_weight` 默认 1.0（原 3.0 让正文堆砌打败精确名匹配） | `tests/regression/test_issue_B07.py` |
-| B-08 | 🟡 低 | `decay_engine.py` | `run_decay_cycle()` | auto-resolve 后立即 `meta["resolved"]=True` 同轮降权生效 | `tests/regression/test_issue_B08.py` |
-| B-09 | 🟡 低 | `server.py` | `hold()` | 用户传入 valence/arousal=0.0 也算有效，优先于 analyze 结果 | `tests/regression/test_issue_B09.py` |
-| B-10 | 🟡 低 | `bucket_manager.py` | `create()` | feel 桶 domain=[] 不被填充为 `["未分类"]` | `tests/regression/test_issue_B10.py` |
+| B-01 | 🔴 高 | `bucket_manager.py` | `update()` | resolved 桶不再立即移入 archive/，由 decay 自然衰减 | `tests/test_decay_plan_letter_no_autoresolve.py` |
+| B-03 | 🔴 高 | `decay_engine.py` | `calculate_score()` | activation_count 用 float 不被 int() 截断浮点涟漪增量 | `tests/test_bucket_locking_phase4.py` |
+| B-04 | 🟠 中 | `bucket_manager.py` | `create()` | 初始 activation_count=0 而非 1，冷启动检测才能生效 | `tests/test_comprehensive.py` |
+| B-05 | 🟠 中 | `bucket_manager.py` | `_calc_time_score()` | 时间衰减系数 0.02 而非 0.1（旧值衰减过快） | `tests/test_scoring.py` |
+| B-06 | 🟠 中 | `bucket_manager.py` | 评分权重 | `w_time` 默认 1.5（原 2.5 过偏近期） | `tests/test_scoring.py` |
+| B-07 | 🟠 中 | `bucket_manager.py` | `_calc_topic_score()` | `content_weight` 默认 1.0（原 3.0 让正文堆砌打败精确名匹配） | `tests/test_scoring.py` |
+| B-08 | 🟡 低 | `decay_engine.py` | `run_decay_cycle()` | auto-resolve 后立即 `meta["resolved"]=True` 同轮降权生效 | `tests/test_decay_plan_letter_no_autoresolve.py` |
+| B-09 | 🟡 低 | `server.py` | `hold()` | 用户传入 valence/arousal=0.0 也算有效，优先于 analyze 结果 | `tests/test_breath_surface_zero_emotion_tiebreak.py` |
+| B-10 | 🟡 低 | `bucket_manager.py` | `create()` | feel 桶 domain=[] 不被填充为 `["未分类"]` | `tests/test_comprehensive.py` |
 
 (B-02 在审查中并入了 B-01，故缺号，不是遗失。)
 
@@ -1674,30 +1787,30 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 
 | 症状 | 文件 | 函数 |
 |---|---|---|
-| `breath()` 无参返回「权重池平静」但桶其实存在 | `tools/breath/` | 浮现分支；检查 `bucket_mgr.list_all()` 是否漏遍历某子目录 |
-| 应该浮现的钉选桶没出现 | `tools/breath/` | 浮现分支的 pinned 过滤；`bucket_mgr.create` 是否写入 `pinned: True` |
-| protected 桶出现在无参 breath/dream/hook | `tools/breath/` + `tools/dream/` + `web/hooks.py` | protected 应只防衰减；检查主候选、提示、plan/feel、Letter/I 等附加池是否统一显式排除 |
+| `breath()` 无参返回「权重池平静」但桶其实存在 | `src/tools/breath/` | 浮现分支；检查 `bucket_mgr.list_all()` 是否漏遍历某子目录 |
+| 应该浮现的钉选桶没出现 | `src/tools/breath/` | 浮现分支的 pinned 过滤；`bucket_mgr.create` 是否写入 `pinned: True` |
+| protected 桶出现在无参 breath/dream/hook | `src/tools/breath/` + `src/tools/dream/` + `src/web/hooks.py` | protected 应只防衰减；检查主候选、提示、plan/feel、Letter/I 等附加池是否统一显式排除 |
 | 钉选桶 importance 不是 10 | `bucket_manager.py` | `create()`（pinned 锁 10）+ `update()`（pinned 重新锁 10） |
 | 检索结果排序看着不对 | `bucket_manager.py` | `search()` Layer 2 + `_calc_topic_score / _calc_emotion_score / _calc_time_score` |
 | 关键词明明在桶名里却没命中 | `bucket_manager.py` | `_calc_topic_score`（rapidfuzz partial_ratio 阈值）+ `fuzzy_threshold` 配置 |
 | resolved 桶完全搜不到 | `bucket_manager.py` | `search()` 阈值检查应该用 normalized 原始值，× 0.3 只在通过阈值后；旧版 B-01 行为 |
-| 向量搜索没生效 | `embedding_engine.py` + `tools/breath/search.py` | `enabled` 是否为 True；`search_similar_strict` 是否触发降级提示；用 `tools/evaluate_retrieval.py --with-embedding` 对比基线 |
+| 向量搜索没生效 | `embedding_engine.py` + `src/tools/breath/search.py` | `enabled` 是否为 True；`search_similar_strict` 是否触发降级提示；用 `tools/evaluate_retrieval.py --with-embedding` 对比基线 |
 | 向量后端切换不生效 | `web/config_api.py` | `/api/config` POST 中 embedding.backend 分支必须 `EmbeddingEngine(config)` 完整重建 |
 | `feel(query=...)` 返回空但有 feel 桶 | `bucket_manager.py` | `list_all()` `dirs` 列表必须含 `self.feel_dir`；另确认关键词是否真的与任何 feel 相关（阈值 0.65） |
-| Top-1 永远是同一个桶 | `tools/breath/` | 浮现分支 `top1` 固定逻辑；想加多样性需改成 sampling |
+| Top-1 永远是同一个桶 | `src/tools/breath/` | 浮现分支 `top1` 固定逻辑；想加多样性需改成 sampling |
 
 ### 11.2 存储 / 合并类
 
 | 症状 | 文件 | 函数 |
 |---|---|---|
-| `hold` 应合并却新建了 | `tools/hold/` + `tools/_common.py` | `merge_or_create`；检查 `merge_threshold` + `bucket_mgr.search(content, limit=1)` 返回的 score |
+| `hold` 应合并却新建了 | `src/tools/hold/` + `src/tools/_common.py` | `merge_or_create`；检查 `merge_threshold` + `bucket_mgr.search(content, limit=1)` 返回的 score |
 | `hold` 应新建却合并到无关桶 | `bucket_manager.py` | `_calc_topic_score` content_weight 是否被改回 3.0；query 用了 content 全文导致正文相似度爆表 |
-| 用户传入 valence=0.0 被忽略 | `tools/hold/` | 必须用 `0 <= valence <= 1` 判定，不能 `if valence`（B-09） |
-| `grow` 短内容报「digest 失败」 | `tools/grow/` | 短内容 `< 30` 字应走 `shortpath` 快速路径；检查长度判断 |
+| 用户传入 valence=0.0 被忽略 | `src/tools/hold/` | 必须用 `0 <= valence <= 1` 判定，不能 `if valence`（B-09） |
+| `grow` 短内容报「digest 失败」 | `src/tools/grow/` | 短内容 `< 30` 字应走 `shortpath` 快速路径；检查长度判断 |
 | 桶名乱码 / 文件名错误 | `utils.py` | `sanitize_name`；检查正则 `[^\w\s\u4e00-\u9fff-]` |
 | feel 桶 domain 莫名变成「未分类」 | `bucket_manager.py` | `create()` 必须对 `bucket_type=="feel"` 单独处理（B-10） |
-| `hold(feel=True)` 没自动打 `__feel__` | `tools/hold/` | feel 分支 `feel_tags = ["__feel__"] + extra_tags` |
-| source_bucket 没被标 digested | `tools/hold/` | feel 分支末尾 `bucket_mgr.update(source_bucket, digested=True, model_valence=...)` |
+| `hold(feel=True)` 没自动打 `__feel__` | `src/tools/hold/` | feel 分支 `feel_tags = ["__feel__"] + extra_tags` |
+| source_bucket 没被标 digested | `src/tools/hold/` | feel 分支末尾 `bucket_mgr.update(source_bucket, digested=True, model_valence=...)` |
 
 ### 11.3 衰减 / 归档类
 
@@ -1715,7 +1828,7 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 |---|---|---|
 | Dashboard 401 | `web/_shared.py` + `web/auth.py` | 会话鉴权 helper；检查 cookie `ombre_session`；`OMBRE_DASHBOARD_PASSWORD` 是否正确 |
 | 改密码报「环境变量密码」错误 | `web/auth.py` | `auth_change_password` 检测 `OMBRE_DASHBOARD_PASSWORD` 设置时禁用 |
-| HTTP 模式下 Claude.ai 连不上 | `server.py` | `__main__` CORS 中间件；`_app = mcp.streamable_http_app()`（单连接器，16 个工具直接注册在 `mcp`）；URL 末尾必须 `/mcp` |
+| HTTP 模式下 Claude.ai 连不上 | `server.py` | `__main__` CORS 中间件；唯一连接器 `/mcp` 固定 16 个基础工具并动态显隐 `You` / `Them`；URL 末尾必须是 `/mcp` |
 | docker compose 重启后桶丢失 | — | 使用 `OMBRE_HOST_VAULT_DIR` 将宿主机目录 bind mount 到 `/app/buckets`；该目录同时持久化桶、配置和 Tunnel token |
 | Dashboard 改 host vault 不生效 | `web/import_api.py` | 容器无法修改启动前确定的宿主机挂载；Docker 内界面只读，必须编辑宿主机 compose 同目录 `.env` 后 `--force-recreate` |
 | keepalive 失败 | `server.py` | `_keepalive_loop`；检查 `OMBRE_PORT` 实际监听端口 |

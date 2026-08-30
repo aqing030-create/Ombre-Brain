@@ -61,6 +61,19 @@ async def dispatch(
         self_review=self_review,
     )
 
+    # them 追加在末尾，独立通道，不进融合打分（rule.md 13.3）。
+    # dream 无 query，走的是按衰减权重取前三那条路：常被提起的人自然排在前面。
+    # 关着 them 时返回空串，输出与没有这个模块时逐字一致。
+    them_service = getattr(rt, "them_service", None)
+    if them_service is not None:
+        try:
+            them_block = await them_service.surface()
+        except Exception as exc:
+            rt.logger.warning(f"them surface skipped / them 追加块跳过: {exc}")
+        else:
+            if them_block:
+                final_text = f"{final_text}\n\n{them_block}"
+
     rendered_candidates = list(getattr(self_review, "rendered_ids", None) or [])
     if rendered_candidates:
         try:

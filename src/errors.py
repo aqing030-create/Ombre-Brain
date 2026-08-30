@@ -73,6 +73,31 @@ class PublicToolError(RuntimeError):
         super().__init__("public tool error")
 
 
+class ToolInputError(ValueError):
+    """入参不合法，工具在任何写入之前就停下了——一个桶都没建。
+
+    为什么需要这个类：MCP 只认异常。工具用 ``return "错误说明"`` 表达失败时，
+    客户端拿到的是一次 ``isError=False`` 的正常返回，调用方（通常是模型自己）
+    会以为写成功了继续往下走，等下次去翻，那条记忆从来没存在过。
+
+    与 PublicToolError 的分工：那个是"固定安全文案，动态正文一个字都不许进"，
+    用于必须收敛话术的失败；这个的正文本来就是要给调用方看的参数校验说明——
+    它得靠这句话知道该改哪个参数。带动态正文的场景先过 safe_error_detail()
+    脱敏，再传进来。
+
+    边界：判据是"这次调用什么都没写"，不是"错在谁"。所以除了入参不合法，
+    写入前的前置条件不成立（原文证据存储不可用、存原文时磁盘失败）同样走这里
+    ——调用方一样需要知道那条记忆没存上。反过来，主体已经成功、只是附带信息
+    没读到的降级提示（``👣 Footprint：暂时无法读取``）不属于这里，
+    那种 isError=False 才对。
+    """
+
+    def __init__(self, message: str):
+        # 折成单行：MCP 把它拼进 "Error executing tool X: ..."，换行会破坏可读性
+        text = " ".join(str(message).split())[:500]
+        super().__init__(text or "入参不合法，未做任何写入。")
+
+
 _SAFE_DETAIL_MAX = 200         # 异常正文对外截断长度（与 import 侧 _CHUNK_ERR_PREVIEW 一致）
 
 
@@ -624,6 +649,7 @@ __all__ = [
     "pop_warnings",
     "format_warnings_suffix",
     "PublicToolError",
+    "ToolInputError",
     "OBStartupError",
     "write_fatal_log",
 ]
