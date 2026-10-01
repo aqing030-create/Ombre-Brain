@@ -233,8 +233,27 @@ _EMOTION_KEYWORDS: dict[str, tuple[float, float]] = {
 }
 
 
+# 冷却兜底：时间戳写不进桶 frontmatter 时（update() 对归档等终态桶直接返回 False），
+# 在进程内存里记一笔，否则那张桶永远"没递过"，每轮都来。
+# 2026-10-01 实测：一张归档桶一个月被递了 249 回，就是这个洞。重启后清空没关系——
+# 被动浮现本身已经跳过归档桶（_is_archived_bucket），这里只防同类的洞。
+_volatile_surfaced: dict[str, float] = {}
+
+
+def _is_archived_bucket(bucket: dict) -> bool:
+    """归档/墓碑桶：代表"过去了"，不参与被动浮现（与层 3 的 include_archive=False 对齐）。"""
+    meta = bucket.get("metadata", {})
+    if str(meta.get("type") or "").strip().lower() == "archived":
+        return True
+    return bool(meta.get("deleted_at")) or _truthy(meta.get("tombstone"))
+
+
 def _is_bucket_cooled(bucket: dict) -> bool:
     """Check cooldown via persistent metadata — survives restart."""
+    cooldown_s = _RECALL_COOLDOWN_HOURS * 3600
+    volatile_at = _volatile_surfaced.get(str(bucket.get("id") or ""))
+    if volatile_at is not None and time.time() - volatile_at < cooldown_s:
+        return True
     last_surfaced = bucket.get("metadata", {}).get("last_surfaced")
     if not last_surfaced:
         return False
@@ -242,7 +261,7 @@ def _is_bucket_cooled(bucket: dict) -> bool:
         t = datetime.fromisoformat(str(last_surfaced))
         if t.tzinfo is None:
             t = t.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - t).total_seconds() < _RECALL_COOLDOWN_HOURS * 3600
+        return (datetime.now(timezone.utc) - t).total_seconds() < cooldown_s
     except (ValueError, TypeError):
         return False
 
@@ -250,11 +269,18 @@ def _is_bucket_cooled(bucket: dict) -> bool:
 async def _mark_surfaced(bucket_ids: list[str]) -> None:
     """Persist surfaced timestamp to bucket metadata."""
     now_iso = datetime.now(timezone.utc).isoformat()
+    now_s = time.time()
+    cooldown_s = _RECALL_COOLDOWN_HOURS * 3600
+    for stale in [b for b, t in _volatile_surfaced.items() if now_s - t >= cooldown_s]:
+        _volatile_surfaced.pop(stale, None)
     for bid in bucket_ids:
+        persisted = False
         try:
-            await sh.bucket_mgr.update(bid, last_surfaced=now_iso)
+            persisted = bool(await sh.bucket_mgr.update(bid, last_surfaced=now_iso))
         except Exception as e:
             logger.warning(f"Failed to mark surfaced: {bid}: {e}")
+        if not persisted:
+            _volatile_surfaced[bid] = now_s
 
 
 def _detect_emotion(text: str) -> tuple[float, float] | None:
@@ -304,8 +330,10 @@ async def _recall_three_layers(user_msg: str) -> str:
     if not scored:
         return ""
 
-    # 加载桶，过滤类型 + 冷却（持久化）
-    top_buckets = []
+    # 加载桶，过滤类型，取前 N 名；冷却放在取名额之后——不补位。
+    # 原先是"先滤冷却再取满 N 张"：最像的几张递过以后，名额就由第 4–9 名顶上，
+    # 聊得越久递的越不沾边。宁可不递，也不乱递（2026-10-01）。
+    ranked_buckets = []
     for bid, _ in scored:
         bucket = await sh.bucket_mgr.get(bid)
         if not bucket:
@@ -313,11 +341,12 @@ async def _recall_three_layers(user_msg: str) -> str:
         meta = bucket.get("metadata", {})
         if meta.get("type") in ("feel", "plan", "letter", "i"):
             continue
-        if _is_bucket_cooled(bucket):
+        if _is_archived_bucket(bucket):
             continue
-        top_buckets.append(bucket)
-        if len(top_buckets) >= _RECALL_MAX_RESULTS:
+        ranked_buckets.append(bucket)
+        if len(ranked_buckets) >= _RECALL_MAX_RESULTS:
             break
+    top_buckets = [b for b in ranked_buckets if not _is_bucket_cooled(b)]
 
     if not top_buckets:
         return ""
@@ -357,6 +386,8 @@ async def _recall_three_layers(user_msg: str) -> str:
                     r_meta = replacement.get("metadata", {})
                     if r_meta.get("type") in ("feel", "plan", "letter", "i"):
                         continue
+                    if _is_archived_bucket(replacement):
+                        continue
                     if _is_bucket_cooled(replacement):
                         continue
                     if focus_domain in (r_meta.get("domain") or []):
@@ -382,8 +413,6 @@ async def _recall_three_layers(user_msg: str) -> str:
                 meta = bucket.get("metadata", {})
                 if meta.get("type") in ("feel", "plan", "letter", "i"):
                     continue
-                if _is_bucket_cooled(bucket):
-                    continue
                 if bucket["id"] in {b["id"] for b in top_buckets}:
                     continue
                 b_valence = meta.get("valence")
@@ -399,7 +428,8 @@ async def _recall_three_layers(user_msg: str) -> str:
                 if dist < 0.3:
                     emotion_candidates.append((bucket, dist))
             emotion_candidates.sort(key=lambda x: x[1])
-            if emotion_candidates:
+            # 不补位：只看情绪最近的那一张，它在冷却就空着，不拿次近的顶。
+            if emotion_candidates and not _is_bucket_cooled(emotion_candidates[0][0]):
                 emotion_bucket = emotion_candidates[0][0]
         except Exception as e:
             logger.warning(f"Recall layer 3 emotion failed: {e}")
@@ -416,10 +446,10 @@ async def _recall_three_layers(user_msg: str) -> str:
             bucket = await sh.bucket_mgr.get(bid)
             if not bucket:
                 continue
-            if _is_bucket_cooled(bucket):
-                continue
             if bucket.get("metadata", {}).get("type") == "feel":
-                feel_bucket = bucket
+                # 不补位：只看最像的那一条 feel，它在冷却就空着。
+                if not _is_bucket_cooled(bucket):
+                    feel_bucket = bucket
                 break
     except Exception as e:
         logger.warning(f"Recall feel channel failed: {e}")

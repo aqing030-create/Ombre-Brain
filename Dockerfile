@@ -90,6 +90,9 @@ ENV OMBRE_CONFIG_PATH=/app/buckets/config.yaml
 # Embedding 使用 API 后端（Gemini）
 # 必须通过运行时 -e 或 docker-compose environment 传入 OMBRE_EMBED_API_KEY
 ENV OMBRE_EMBED_BACKEND=api
+# 定制：关掉自动归档——衰减照常算分，但不再把低分桶移进 archive/（2026-10-01）。
+# 写在镜像里，推上去就生效；想再打开，在平台变量里设 OMBRE_AUTO_ARCHIVE=1 覆盖。
+ENV OMBRE_AUTO_ARCHIVE=0
 
 EXPOSE 8000
 

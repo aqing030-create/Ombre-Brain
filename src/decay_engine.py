@@ -22,6 +22,7 @@ decay_engine.py — 记忆衰减引擎，模拟人类遗忘曲线
 ========================================
 """
 
+import os
 import math
 import asyncio
 import logging
@@ -135,6 +136,14 @@ class DecayEngine:
         self.decay_lambda = decay_cfg.get("lambda", _DEFAULT_LAMBDA)
         self.threshold = decay_cfg.get("threshold", _DEFAULT_THRESHOLD)
         self.check_interval = decay_cfg.get("check_interval_hours", _DEFAULT_CHECK_INTERVAL_HRS)
+        # 定制：自动归档开关。关掉以后衰减照常算分（breath 里低分照样沉底），
+        # 只是不再把低于阈值的桶移进 archive/。归档是终态，update() 写不进，
+        # recall-hook 的冷却时间戳落不了地（2026-10-01）。默认保持上游行为（开）。
+        # 优先级：环境变量 OMBRE_AUTO_ARCHIVE > decay.auto_archive > 默认 True。
+        self.auto_archive = parse_bool(decay_cfg.get("auto_archive", True), default=True)
+        env_auto_archive = os.environ.get("OMBRE_AUTO_ARCHIVE", "").strip()
+        if env_auto_archive:
+            self.auto_archive = parse_bool(env_auto_archive, default=self.auto_archive)
 
         # --- Emotion weight params (continuous arousal coordinate) ---
         # --- 情感权重参数（基于连续 arousal 坐标）---
@@ -354,7 +363,7 @@ class DecayEngine:
 
             # --- Below threshold → archive (simulate forgetting) ---
             # --- 低于阈值 → 归档（模拟遗忘）---
-            if score < self.threshold:
+            if self.auto_archive and score < self.threshold:
                 try:
                     success = await self.bucket_mgr.archive(bucket["id"])
                     if success:
